@@ -32,6 +32,12 @@
     verifiedStorageRegions: string[];
   }
 
+  interface ApiKeyProfile {
+    id: string;
+    label: string;
+    active: boolean;
+  }
+
   interface LaunchEvent {
     stage: LaunchStage;
     detail: string;
@@ -133,6 +139,14 @@
   let settings: Settings | null = null;
   let selectedId = "";
   let apiKey = "";
+  let apiKeyLabel = "Default";
+  let apiKeyProfiles: ApiKeyProfile[] = [];
+  let activeApiKeyId = "";
+  let newApiKey = "";
+  let newApiKeyLabel = "";
+  let replacementApiKey = "";
+  let replacingProfileId = "";
+  let keyBusy = "";
   let setupBusy = false;
   let launchBusy = false;
   let errorMessage = "";
@@ -212,12 +226,14 @@
 
   async function initialize() {
     try {
-      const [hasKey, availablePresets, currentSettings, history] = await Promise.all([
-        invoke<boolean>("api_key_status"),
+      const [keyProfiles, availablePresets, currentSettings, history] = await Promise.all([
+        invoke<ApiKeyProfile[]>("list_api_keys"),
         invoke<Preset[]>("list_presets"),
         invoke<Settings>("get_settings"),
         invoke<HistoryEntry[]>("session_history")
       ]);
+      apiKeyProfiles = keyProfiles;
+      activeApiKeyId = keyProfiles.find((profile) => profile.active)?.id ?? "";
       presets = availablePresets;
       settings = currentSettings;
       recentSessions = history;
@@ -225,8 +241,8 @@
         availablePresets.find((preset) => preset.tags.includes("recommended"))?.id ??
         availablePresets[0]?.id ??
         "";
-      screen = hasKey ? "idle" : "setup";
-      if (hasKey) void refreshCache();
+      screen = keyProfiles.length ? "idle" : "setup";
+      if (keyProfiles.length) void refreshCache();
     } catch (error) {
       errorMessage = messageFrom(error);
       screen = "setup";
@@ -261,18 +277,112 @@
   }
 
   async function saveApiKey() {
-    if (!apiKey.trim()) return;
+    if (!apiKey.trim() || !apiKeyLabel.trim()) return;
     setupBusy = true;
     errorMessage = "";
     try {
-      await invoke("save_api_key", { apiKey: apiKey.trim() });
+      await invoke<ApiKeyProfile>("add_api_key", {
+        label: apiKeyLabel.trim(),
+        apiKey: apiKey.trim()
+      });
       apiKey = "";
+      await refreshApiKeys();
       screen = "idle";
       void refreshCache();
     } catch (error) {
       errorMessage = messageFrom(error);
     } finally {
       setupBusy = false;
+    }
+  }
+
+  async function refreshApiKeys() {
+    apiKeyProfiles = await invoke<ApiKeyProfile[]>("list_api_keys");
+    activeApiKeyId = apiKeyProfiles.find((profile) => profile.active)?.id ?? "";
+  }
+
+  async function addApiKey() {
+    if (!newApiKey.trim() || !newApiKeyLabel.trim() || keyBusy) return;
+    keyBusy = "add";
+    errorMessage = "";
+    try {
+      await invoke<ApiKeyProfile>("add_api_key", {
+        label: newApiKeyLabel.trim(),
+        apiKey: newApiKey.trim()
+      });
+      newApiKey = "";
+      newApiKeyLabel = "";
+      await refreshApiKeys();
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      keyBusy = "";
+    }
+  }
+
+  async function selectApiKey(profileId: string) {
+    if (!profileId || keyBusy) return;
+    keyBusy = `select:${profileId}`;
+    errorMessage = "";
+    try {
+      await invoke("select_api_key", { profileId });
+      await refreshApiKeys();
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      await refreshApiKeys();
+    } finally {
+      keyBusy = "";
+    }
+  }
+
+  function beginReplaceApiKey(profileId: string) {
+    replacingProfileId = profileId;
+    replacementApiKey = "";
+    errorMessage = "";
+  }
+
+  async function replaceApiKey(profileId: string) {
+    if (!replacementApiKey.trim() || keyBusy) return;
+    keyBusy = `replace:${profileId}`;
+    errorMessage = "";
+    try {
+      await invoke("replace_api_key", {
+        profileId,
+        apiKey: replacementApiKey.trim()
+      });
+      replacementApiKey = "";
+      replacingProfileId = "";
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      keyBusy = "";
+    }
+  }
+
+  async function removeApiKey(profileId: string) {
+    if (keyBusy) return;
+    keyBusy = `remove:${profileId}`;
+    errorMessage = "";
+    try {
+      await invoke("remove_api_key", { profileId });
+      if (replacingProfileId === profileId) {
+        replacingProfileId = "";
+        replacementApiKey = "";
+      }
+      await refreshApiKeys();
+      if (apiKeyProfiles.length === 0) {
+        apiKeyLabel = "Default";
+        screen = "setup";
+      } else {
+        await refreshCache();
+      }
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      keyBusy = "";
     }
   }
 
@@ -295,6 +405,7 @@
     try {
       const [tiers] = await Promise.all([
         gpuTiers.length ? Promise.resolve(gpuTiers) : invoke<GpuTier[]>("list_gpu_tiers"),
+        refreshApiKeys(),
         refreshCache()
       ]);
       gpuTiers = tiers;
@@ -548,6 +659,16 @@
               </p>
             </div>
             <form onsubmit={(event) => { event.preventDefault(); void saveApiKey(); }}>
+              <label for="runpod-key-label">Key name</label>
+              <input
+                id="runpod-key-label"
+                bind:value={apiKeyLabel}
+                type="text"
+                maxlength="32"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Personal"
+              />
               <label for="runpod-key">API key</label>
               <input
                 id="runpod-key"
@@ -670,6 +791,20 @@
                 {/if}
               </div>
               {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
+              <div class="account-row">
+                <span>RunPod key</span>
+                <select
+                  aria-label="Active RunPod API key"
+                  bind:value={activeApiKeyId}
+                  disabled={Boolean(keyBusy)}
+                  onchange={() => void selectApiKey(activeApiKeyId)}
+                >
+                  {#each apiKeyProfiles as profile}
+                    <option value={profile.id}>{profile.label}</option>
+                  {/each}
+                </select>
+                <button type="button" class="text-button" onclick={openManage}>Keys</button>
+              </div>
               <div class="storage-row">
                 <span
                   >Persistent storage · {cacheBusy ? "reading" : `${totalAllocatedGb} GB allocated`}</span
@@ -698,14 +833,121 @@
                 </svg>
               </button>
               <div>
-                <p class="eyebrow">Persistent storage</p>
-                <h1>Manage models</h1>
+                <p class="eyebrow">Models and access</p>
+                <h1>Manage</h1>
               </div>
               <span class="storage-total">{totalAllocatedGb} GB</span>
             </div>
 
             <div class="manage-scroll">
               <div class="section-label">
+                <span>RunPod API keys</span>
+                <span>{apiKeyProfiles.length}</span>
+              </div>
+              <div class="key-list">
+                {#each apiKeyProfiles as profile}
+                  <div class:active={profile.active} class="key-row">
+                    <span class="key-copy">
+                      <strong>{profile.label}</strong>
+                      <small>{profile.active ? "Active" : "Stored in OS keychain"}</small>
+                    </span>
+                    <span class="key-actions">
+                      {#if !profile.active}
+                        <button
+                          type="button"
+                          disabled={Boolean(keyBusy)}
+                          onclick={() => void selectApiKey(profile.id)}
+                        >
+                          {keyBusy === `select:${profile.id}` ? "Switching" : "Use"}
+                        </button>
+                      {/if}
+                      <button
+                        type="button"
+                        disabled={Boolean(keyBusy)}
+                        onclick={() => beginReplaceApiKey(profile.id)}
+                      >
+                        Replace
+                      </button>
+                      <button
+                        class="danger"
+                        type="button"
+                        disabled={Boolean(keyBusy)}
+                        onclick={() => void removeApiKey(profile.id)}
+                      >
+                        {keyBusy === `remove:${profile.id}` ? "Removing" : "Remove"}
+                      </button>
+                    </span>
+                    {#if replacingProfileId === profile.id}
+                      <form
+                        class="replace-key-form"
+                        onsubmit={(event) => {
+                          event.preventDefault();
+                          void replaceApiKey(profile.id);
+                        }}
+                      >
+                        <input
+                          aria-label={`Replacement API key for ${profile.label}`}
+                          bind:value={replacementApiKey}
+                          type="password"
+                          autocomplete="off"
+                          spellcheck="false"
+                          placeholder="Paste replacement key"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!replacementApiKey.trim() || Boolean(keyBusy)}
+                        >
+                          {keyBusy === `replace:${profile.id}` ? "Validating" : "Save"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={Boolean(keyBusy)}
+                          onclick={() => {
+                            replacingProfileId = "";
+                            replacementApiKey = "";
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </form>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+              <form
+                class="add-key-form"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  void addApiKey();
+                }}
+              >
+                <input
+                  aria-label="New API key name"
+                  bind:value={newApiKeyLabel}
+                  type="text"
+                  maxlength="32"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="Key name"
+                />
+                <input
+                  aria-label="New RunPod API key"
+                  bind:value={newApiKey}
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="RunPod API key"
+                />
+                <button
+                  class="secondary-button"
+                  type="submit"
+                  disabled={!newApiKeyLabel.trim() || !newApiKey.trim() || Boolean(keyBusy)}
+                >
+                  {keyBusy === "add" ? "Validating" : "Add key"}
+                </button>
+              </form>
+
+              <div class="section-label add-label">
                 <span>Cached models</span>
                 <span>{cachedModels.length}</span>
               </div>

@@ -65,6 +65,7 @@ pub struct AppState {
     runtime: Mutex<RuntimeState>,
     pub user_presets_path: PathBuf,
     pub settings_path: PathBuf,
+    pub credential_index_path: PathBuf,
     pub history_path: PathBuf,
     pub fx_rate_path: PathBuf,
 }
@@ -83,6 +84,7 @@ impl AppState {
     pub fn load(config_dir: PathBuf) -> Result<Self, StateError> {
         let user_presets_path = config_dir.join("presets.user.json");
         let settings_path = config_dir.join("settings.json");
+        let credential_index_path = config_dir.join("api-keys.json");
         let history_path = config_dir.join("session-history.json");
         let fx_rate_path = config_dir.join("fx-rate.json");
         let presets = PresetCatalog::load(&user_presets_path)?;
@@ -93,6 +95,7 @@ impl AppState {
             runtime: Mutex::new(RuntimeState::Idle),
             user_presets_path,
             settings_path,
+            credential_index_path,
             history_path,
             fx_rate_path,
         })
@@ -144,6 +147,19 @@ impl AppState {
             Ok(())
         } else {
             Err(StateError::AlreadyActive)
+        }
+    }
+
+    pub async fn begin_credential_change(&self) -> Result<Option<GraceSession>, StateError> {
+        let mut runtime = self.runtime.lock().await;
+        let previous = std::mem::replace(&mut *runtime, RuntimeState::Idle);
+        match previous {
+            RuntimeState::Idle => Ok(None),
+            RuntimeState::Grace(grace) => Ok(Some(*grace)),
+            active => {
+                *runtime = active;
+                Err(StateError::AlreadyActive)
+            }
         }
     }
 

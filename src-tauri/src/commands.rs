@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    credentials::CredentialStore,
+    credentials::{CredentialProfile, CredentialStore},
     fx,
     harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
     history::{self, SessionHistoryEntry},
@@ -119,7 +119,7 @@ pub async fn add_custom_preset(
 
 #[tauri::command]
 pub async fn list_cached_models(state: State<'_, AppState>) -> Result<CacheSummary, String> {
-    let api_key = CredentialStore::read_key()
+    let api_key = CredentialStore::read_active_key(&state.credential_index_path)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
     let volumes = RunpodClient::new(api_key)
@@ -175,7 +175,7 @@ pub async fn delete_cached_model(
         .require_idle()
         .await
         .map_err(|error| error.to_string())?;
-    let api_key = CredentialStore::read_key()
+    let api_key = CredentialStore::read_active_key(&state.credential_index_path)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
     let runpod = RunpodClient::new(api_key).map_err(|error| error.to_string())?;
@@ -234,24 +234,70 @@ pub fn set_idle_timeout(minutes: u16, state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
-pub async fn api_key_status() -> Result<bool, String> {
-    CredentialStore::contains_key().map_err(|error| error.to_string())
+pub async fn list_api_keys(state: State<'_, AppState>) -> Result<Vec<CredentialProfile>, String> {
+    CredentialStore::list_profiles(&state.credential_index_path).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub async fn save_api_key(api_key: String) -> Result<(), String> {
+pub async fn add_api_key(
+    label: String,
+    api_key: String,
+    state: State<'_, AppState>,
+) -> Result<CredentialProfile, String> {
+    let api_key = validated_api_key(&api_key).await?;
+    prepare_credential_change(&state).await?;
+    CredentialStore::add_profile(&state.credential_index_path, &label, &api_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn replace_api_key(
+    profile_id: String,
+    api_key: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let api_key = validated_api_key(&api_key).await?;
+    prepare_credential_change(&state).await?;
+    CredentialStore::replace_profile(&state.credential_index_path, &profile_id, &api_key)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn select_api_key(profile_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    prepare_credential_change(&state).await?;
+    CredentialStore::select_profile(&state.credential_index_path, &profile_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn remove_api_key(profile_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    prepare_credential_change(&state).await?;
+    CredentialStore::delete_profile(&state.credential_index_path, &profile_id)
+        .map_err(|error| error.to_string())
+}
+
+async fn prepare_credential_change(state: &State<'_, AppState>) -> Result<(), String> {
+    let grace = state
+        .begin_credential_change()
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(grace) = grace
+        && let Err(error) = terminate_with_retry(&grace.runpod, &grace.view.session.pod_id).await
+    {
+        state.set_grace(grace).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn validated_api_key(api_key: &str) -> Result<String, String> {
     let api_key = api_key.trim();
     let client = RunpodClient::new(api_key).map_err(|error| error.to_string())?;
     client
         .validate_key()
         .await
         .map_err(|error| error.to_string())?;
-    CredentialStore::write_key(api_key).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub async fn remove_api_key() -> Result<(), String> {
-    CredentialStore::delete_key().map_err(|error| error.to_string())
+    Ok(api_key.to_owned())
 }
 
 #[tauri::command]
@@ -308,7 +354,7 @@ async fn launch_preset_inner(
         .map_err(|_| "settings lock is poisoned".to_owned())?
         .storage_region
         .clone();
-    let api_key = CredentialStore::read_key()
+    let api_key = CredentialStore::read_active_key(&state.credential_index_path)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
     let runpod = RunpodClient::new(api_key).map_err(|error| error.to_string())?;

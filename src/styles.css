@@ -385,6 +385,118 @@ button:disabled {
   margin-top: 17px;
 }
 
+.key-list {
+  display: grid;
+  gap: 5px;
+}
+
+.key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 43px;
+  padding: 6px 7px;
+  border: 1px solid #24282e;
+  border-radius: 8px;
+  background: #111419;
+}
+
+.key-row.active {
+  border-color: rgb(114 212 155 / 35%);
+  background: linear-gradient(90deg, rgb(114 212 155 / 6%), #111419);
+}
+
+.key-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.key-copy strong {
+  overflow: hidden;
+  color: #d8dad6;
+  font-size: 9.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.key-copy small {
+  color: #657069;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+}
+
+.key-actions {
+  display: flex;
+  gap: 3px;
+}
+
+.key-actions button,
+.replace-key-form button {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid #30353c;
+  border-radius: 6px;
+  color: #9ea39d;
+  background: #181c21;
+  font-size: 8px;
+}
+
+.key-actions button:hover:not(:disabled),
+.replace-key-form button:hover:not(:disabled) {
+  color: #daddd7;
+  border-color: #414850;
+}
+
+.key-actions button.danger {
+  color: #b7787b;
+}
+
+.key-actions button.danger:hover:not(:disabled) {
+  color: #ef8589;
+  border-color: #5e3337;
+  background: #24171a;
+}
+
+.replace-key-form {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-column: 1 / -1;
+  gap: 4px;
+}
+
+.replace-key-form input {
+  height: 28px;
+  font-size: 9px;
+}
+
+.replace-key-form button {
+  height: 28px;
+}
+
+.add-key-form {
+  grid-template-columns: 82px minmax(0, 1fr) auto;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 7px;
+  border: 1px solid #24282e;
+  border-radius: 8px;
+  background: #111419;
+}
+
+.add-key-form input {
+  width: 100%;
+  height: 30px;
+  padding: 0 7px;
+  font-size: 8.5px;
+}
+
+.add-key-form .secondary-button {
+  min-height: 30px;
+  padding: 0 8px;
+}
+
 .cache-list {
   display: grid;
   gap: 5px;
@@ -833,6 +945,23 @@ button:disabled {
 
 .number-field input::-webkit-inner-spin-button {
   appearance: none;
+}
+
+.account-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  color: #646a72;
+  font-size: 9px;
+}
+
+.account-row select {
+  width: 100%;
+  height: 27px;
+  padding: 0 7px;
+  border-radius: 7px;
+  font-size: 9px;
 }
 
 .storage-row {

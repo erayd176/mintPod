@@ -10,6 +10,7 @@ PodPilot is a small desktop control panel for running a coding model on RunPod w
 - Keeps the selected model resident with `OLLAMA_KEEP_ALIVE=-1`.
 - Serves the pod locally at `http://127.0.0.1:8080` behind a random bearer token.
 - Merges the active model into Pi's configuration without replacing other providers.
+- Keeps named RunPod key profiles in the OS keychain and lets you switch the active account.
 - Stops on the selected budget or on real proxy inactivity, then terminates the pod after a five-minute grace period.
 - Keeps the RunPod API key in the operating system keychain. There is no telemetry, account layer, or cloud sync.
 
@@ -52,11 +53,11 @@ cargo tauri dev
 On first launch:
 
 1. Create or copy an API key from the RunPod console.
-2. Paste it into PodPilot.
+2. Give the key a local name and paste it into PodPilot.
 3. Select the Network Volume region closest to the GPU region you intend to use.
 4. Save the key.
 
-The key is validated against RunPod before it is stored. PodPilot uses macOS Keychain, Windows Credential Manager, or the Linux Secret Service through the Rust `keyring` crate. It is never written to a JSON file.
+The key is validated against RunPod before it is stored. PodPilot uses macOS Keychain, Windows Credential Manager, or the Linux Secret Service through the Rust `keyring` crate. It is never written to a JSON file. Add, replace, remove, or switch named keys under **Manage**; the compact selector on the launch screen shows which profile is active.
 
 ## Launch and verify Pi
 

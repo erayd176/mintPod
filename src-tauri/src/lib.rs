@@ -60,8 +60,10 @@ pub fn run() {
             commands::get_settings,
             commands::set_storage_region,
             commands::set_idle_timeout,
-            commands::api_key_status,
-            commands::save_api_key,
+            commands::list_api_keys,
+            commands::add_api_key,
+            commands::replace_api_key,
+            commands::select_api_key,
             commands::remove_api_key,
             commands::launch_preset,
             commands::stop_session
