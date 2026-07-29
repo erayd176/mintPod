@@ -1,9 +1,11 @@
 use std::{
     collections::HashSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
+use atomic_write_file::AtomicWriteFile;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -59,6 +61,49 @@ pub struct PresetView {
     pub user_defined: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuTierView {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub gpu_type_ids: &'static [&'static str],
+    pub est_cost_per_hr: f64,
+}
+
+pub const GPU_TIERS: &[GpuTierView] = &[
+    GpuTierView {
+        id: "economy",
+        label: "Economy",
+        gpu_type_ids: &[
+            "NVIDIA GeForce RTX 3070",
+            "NVIDIA GeForce RTX 3080",
+            "NVIDIA RTX A4000",
+        ],
+        est_cost_per_hr: 0.18,
+    },
+    GpuTierView {
+        id: "balanced",
+        label: "Balanced",
+        gpu_type_ids: &[
+            "NVIDIA GeForce RTX 3080 Ti",
+            "NVIDIA GeForce RTX 4070 Ti",
+            "NVIDIA RTX A4000",
+            "NVIDIA GeForce RTX 4080",
+        ],
+        est_cost_per_hr: 0.22,
+    },
+    GpuTierView {
+        id: "quality",
+        label: "Quality",
+        gpu_type_ids: &[
+            "NVIDIA GeForce RTX 4090",
+            "NVIDIA RTX A5000",
+            "NVIDIA GeForce RTX 3090",
+        ],
+        est_cost_per_hr: 0.44,
+    },
+];
+
 #[derive(Debug, Error)]
 pub enum PresetError {
     #[error("preset schema is invalid: {0}")]
@@ -83,6 +128,8 @@ pub enum PresetError {
     DuplicateId(String),
     #[error("could not read {path}: {message}")]
     ReadFile { path: PathBuf, message: String },
+    #[error("could not write {path}: {message}")]
+    WriteFile { path: PathBuf, message: String },
     #[error("presets.user.json must contain a JSON array")]
     UserFileNotArray,
 }
@@ -154,6 +201,104 @@ impl PresetCatalog {
             .find(|entry| entry.preset.id == id)
             .map(|entry| entry.preset.clone())
     }
+
+    pub fn add_user_preset(
+        &mut self,
+        user_file: &Path,
+        mut preset: Preset,
+    ) -> Result<PresetView, PresetError> {
+        preset.id = self.available_custom_id(&preset.ollama_tag);
+        let schema: Value = serde_json::from_str(SCHEMA).map_err(|error| {
+            PresetError::InvalidSchema(format!("schema is not valid JSON: {error}"))
+        })?;
+        let validator = jsonschema::validator_for(&schema)
+            .map_err(|error| PresetError::InvalidSchema(error.to_string()))?;
+        let value = serde_json::to_value(&preset).expect("a preset always serializes");
+        let preset = parse_value("new custom preset", value, &validator)?;
+        let view = PresetView {
+            preset,
+            user_defined: true,
+        };
+        let mut user_presets: Vec<&Preset> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.user_defined)
+            .map(|entry| &entry.preset)
+            .collect();
+        user_presets.push(&view.preset);
+        write_user_presets(user_file, &user_presets)?;
+        self.entries.push(view.clone());
+        Ok(view)
+    }
+
+    fn available_custom_id(&self, ollama_tag: &str) -> String {
+        let slug = ollama_tag
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let base = format!("custom-{slug}")
+            .chars()
+            .take(60)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .to_owned();
+        let mut candidate = base.clone();
+        let mut suffix = 2;
+        while self
+            .entries
+            .iter()
+            .any(|entry| entry.preset.id == candidate)
+        {
+            candidate = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        candidate
+    }
+}
+
+pub fn verified_gpu_tier(gpu_type_ids: &[String]) -> Option<&'static GpuTierView> {
+    GPU_TIERS.iter().find(|tier| {
+        tier.gpu_type_ids
+            .iter()
+            .copied()
+            .eq(gpu_type_ids.iter().map(String::as_str))
+    })
+}
+
+fn write_user_presets(path: &Path, presets: &[&Preset]) -> Result<(), PresetError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| PresetError::WriteFile {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+    }
+    let mut contents =
+        serde_json::to_vec_pretty(presets).expect("a preset list always serializes successfully");
+    contents.push(b'\n');
+    let mut file = AtomicWriteFile::open(path).map_err(|error| PresetError::WriteFile {
+        path: path.to_owned(),
+        message: error.to_string(),
+    })?;
+    file.write_all(&contents)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| PresetError::WriteFile {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+    file.commit().map_err(|error| PresetError::WriteFile {
+        path: path.to_owned(),
+        message: error.to_string(),
+    })
 }
 
 fn parse_preset(
@@ -247,5 +392,66 @@ mod tests {
         });
 
         assert!(validator.validate(&value).is_err());
+    }
+
+    #[test]
+    fn verified_gpu_tiers_require_the_exact_ranked_list() {
+        let balanced = GPU_TIERS[1]
+            .gpu_type_ids
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect::<Vec<_>>();
+        let mut reordered = balanced.clone();
+        reordered.reverse();
+
+        assert_eq!(
+            verified_gpu_tier(&balanced).map(|tier| tier.id),
+            Some("balanced")
+        );
+        assert!(verified_gpu_tier(&reordered).is_none());
+    }
+
+    #[test]
+    fn custom_presets_are_appended_without_clobbering_existing_entries() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("podpilot-presets-{}-{nonce}", std::process::id(),));
+        fs::create_dir_all(&directory).unwrap();
+        let user_file = directory.join("presets.user.json");
+        let mut catalog = PresetCatalog::load(&user_file).unwrap();
+        let custom = Preset {
+            id: String::new(),
+            label: "example:7b".to_owned(),
+            ollama_tag: "example:7b".to_owned(),
+            size_gb: 4.0,
+            min_vram_gb: 8,
+            gpu_type_ids: GPU_TIERS[0]
+                .gpu_type_ids
+                .iter()
+                .map(|id| (*id).to_owned())
+                .collect(),
+            est_cost_per_hr: GPU_TIERS[0].est_cost_per_hr,
+            tags: vec!["coding".to_owned(), "custom".to_owned()],
+        };
+
+        let first = catalog.add_user_preset(&user_file, custom.clone()).unwrap();
+        let second = catalog.add_user_preset(&user_file, custom).unwrap();
+        let reloaded = PresetCatalog::load(&user_file).unwrap();
+
+        assert_eq!(first.preset.id, "custom-example-7b");
+        assert_eq!(second.preset.id, "custom-example-7b-2");
+        assert_eq!(
+            reloaded
+                .list()
+                .iter()
+                .filter(|preset| preset.user_defined)
+                .count(),
+            2
+        );
+
+        fs::remove_dir_all(directory).unwrap();
     }
 }

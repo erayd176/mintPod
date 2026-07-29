@@ -298,11 +298,261 @@ button:disabled {
 }
 
 .idle-layout,
+.manage-layout,
 .launching-layout,
 .running-layout {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.manage-layout {
+  margin: -2px;
+}
+
+.manage-heading {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid #22262b;
+}
+
+.back-button {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: #969ba3;
+  background: #13161a;
+  place-items: center;
+}
+
+.back-button:hover {
+  color: #e5e7e2;
+  border-color: var(--border-strong);
+}
+
+.back-button svg,
+.cache-icon svg,
+.delete-button svg {
+  width: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+}
+
+.storage-total {
+  color: #7b8189;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.manage-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 2px 4px;
+  overflow-y: auto;
+  scrollbar-color: #353941 transparent;
+  scrollbar-width: thin;
+}
+
+.section-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 7px;
+  color: #6d737b;
+  font-size: 8px;
+  font-weight: 680;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.section-label.add-label {
+  margin-top: 17px;
+}
+
+.cache-list {
+  display: grid;
+  gap: 5px;
+}
+
+.cache-row {
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr) 25px;
+  align-items: center;
+  min-height: 49px;
+  padding: 6px 7px;
+  border: 1px solid #24282e;
+  border-radius: 8px;
+  background: #111419;
+}
+
+.cache-icon {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  border-radius: 6px;
+  color: #6f8578;
+  background: rgb(114 212 155 / 8%);
+  place-items: center;
+}
+
+.cache-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.cache-copy strong {
+  overflow: hidden;
+  color: #d8dad6;
+  font-size: 9.5px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cache-copy small {
+  overflow: hidden;
+  color: #636a72;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delete-button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #75666a;
+  background: transparent;
+  place-items: center;
+}
+
+.delete-button:hover:not(:disabled) {
+  color: #ee7b7f;
+  background: rgb(239 100 104 / 9%);
+}
+
+.delete-button .stage-spinner {
+  width: 11px;
+  height: 11px;
+  border-top-color: #d76d71;
+}
+
+.empty-cache {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 54px;
+  padding: 10px;
+  border: 1px dashed #2a2e34;
+  border-radius: 8px;
+  color: #646a72;
+  font-size: 9px;
+  text-align: center;
+}
+
+.empty-cache .loader {
+  width: 12px;
+  height: 12px;
+}
+
+.custom-form {
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #24282e;
+  border-radius: 9px;
+  background: #111419;
+}
+
+.custom-form > input,
+.custom-form > select {
+  height: 32px;
+}
+
+.form-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.form-pair label {
+  display: grid;
+  gap: 6px;
+}
+
+.number-field.form-number {
+  height: 32px;
+}
+
+.number-field.form-number input {
+  width: 100%;
+  height: 30px;
+}
+
+.number-field.form-number > span {
+  padding-right: 7px;
+}
+
+.gpu-list {
+  margin: 0;
+  overflow: hidden;
+  color: #5f666e;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soft-warning {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid #5d4a26;
+  border-radius: 7px;
+  color: #c8ad73;
+  background: #201b12;
+  font-size: 8px;
+}
+
+.soft-warning button {
+  padding: 0;
+  border: 0;
+  color: #e1c37e;
+  background: transparent;
+  font-size: 8px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.secondary-button {
+  min-height: 34px;
+  border: 1px solid #3b4249;
+  border-radius: 8px;
+  color: #d4d7d2;
+  background: #22272d;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.secondary-button:hover:not(:disabled) {
+  border-color: #4a525b;
+  background: #293038;
 }
 
 .screen-heading,

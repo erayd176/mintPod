@@ -72,6 +72,13 @@ impl AppState {
         self.presets.read()
     }
 
+    pub fn presets_mut(
+        &self,
+    ) -> Result<RwLockWriteGuard<'_, PresetCatalog>, PoisonError<RwLockWriteGuard<'_, PresetCatalog>>>
+    {
+        self.presets.write()
+    }
+
     pub fn settings(
         &self,
     ) -> Result<RwLockReadGuard<'_, AppSettings>, PoisonError<RwLockReadGuard<'_, AppSettings>>>
@@ -93,6 +100,14 @@ impl AppState {
         }
         *runtime = RuntimeState::Launching;
         Ok(())
+    }
+
+    pub async fn require_idle(&self) -> Result<(), StateError> {
+        if matches!(*self.runtime.lock().await, RuntimeState::Idle) {
+            Ok(())
+        } else {
+            Err(StateError::AlreadyActive)
+        }
     }
 
     pub async fn finish_launch(

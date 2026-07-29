@@ -26,6 +26,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_presets,
+            commands::list_gpu_tiers,
+            commands::add_custom_preset,
+            commands::list_cached_models,
+            commands::delete_cached_model,
             commands::get_settings,
             commands::set_storage_region,
             commands::api_key_status,

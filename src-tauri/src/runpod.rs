@@ -107,6 +107,14 @@ impl RunpodClient {
         .await
     }
 
+    pub async fn delete_network_volume(&self, volume_id: &str) -> Result<(), RunpodError> {
+        let response = self
+            .delete(&format!("/networkvolumes/{volume_id}"))
+            .send()
+            .await?;
+        ensure_success(response).await.map(|_| ())
+    }
+
     pub async fn ensure_model_volume(
         &self,
         preset_id: &str,

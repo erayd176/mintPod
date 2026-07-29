@@ -5,7 +5,7 @@
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
 
-  type Screen = "loading" | "setup" | "idle" | "launching" | "running";
+  type Screen = "loading" | "setup" | "idle" | "manage" | "launching" | "running";
   type BudgetMode = "time" | "cost";
   type LaunchStage =
     | "requestingPod"
@@ -38,6 +38,34 @@
     completedBytes: number | null;
     totalBytes: number | null;
     skipped: boolean;
+  }
+
+  interface GpuTier {
+    id: string;
+    label: string;
+    gpuTypeIds: string[];
+    estCostPerHr: number;
+  }
+
+  interface CachedModel {
+    volumeId: string;
+    presetId: string;
+    label: string;
+    ollamaTag: string;
+    modelSizeGb: number;
+    allocatedGb: number;
+    dataCenterId: string;
+  }
+
+  interface CacheSummary {
+    models: CachedModel[];
+    totalAllocatedGb: number;
+  }
+
+  interface AddPresetResult {
+    requiresConfirmation: boolean;
+    warning: string | null;
+    preset: Preset | null;
   }
 
   interface Session {
@@ -90,6 +118,17 @@
   let stopBusy = false;
   let stopTimer: ReturnType<typeof setTimeout> | null = null;
   let stages: StageState[] = freshStages();
+  let cachedModels: CachedModel[] = [];
+  let totalAllocatedGb = 0;
+  let cacheBusy = false;
+  let deletingVolumeId = "";
+  let gpuTiers: GpuTier[] = [];
+  let customTag = "";
+  let customSizeGb = 5;
+  let customMinVramGb = 12;
+  let customGpuTierId = "balanced";
+  let customBusy = false;
+  let customWarning = "";
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: elapsedSeconds = session
@@ -105,6 +144,8 @@
             ? ((costBudgetEur - accruedCost) / session.costPerHr) * 3600
             : 0
         );
+  $: selectedGpuTier =
+    gpuTiers.find((tier) => tier.id === customGpuTierId) ?? gpuTiers[0] ?? null;
 
   onMount(() => {
     let unlisten: UnlistenFn | undefined;
@@ -148,6 +189,7 @@
         availablePresets[0]?.id ??
         "";
       screen = hasKey ? "idle" : "setup";
+      if (hasKey) void refreshCache();
     } catch (error) {
       errorMessage = messageFrom(error);
       screen = "setup";
@@ -162,10 +204,87 @@
       await invoke("save_api_key", { apiKey: apiKey.trim() });
       apiKey = "";
       screen = "idle";
+      void refreshCache();
     } catch (error) {
       errorMessage = messageFrom(error);
     } finally {
       setupBusy = false;
+    }
+  }
+
+  async function refreshCache() {
+    cacheBusy = true;
+    try {
+      const cache = await invoke<CacheSummary>("list_cached_models");
+      cachedModels = cache.models;
+      totalAllocatedGb = cache.totalAllocatedGb;
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      cacheBusy = false;
+    }
+  }
+
+  async function openManage() {
+    screen = "manage";
+    errorMessage = "";
+    try {
+      const [tiers] = await Promise.all([
+        gpuTiers.length ? Promise.resolve(gpuTiers) : invoke<GpuTier[]>("list_gpu_tiers"),
+        refreshCache()
+      ]);
+      gpuTiers = tiers;
+      if (!tiers.some((tier) => tier.id === customGpuTierId)) {
+        customGpuTierId = tiers[0]?.id ?? "";
+      }
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    }
+  }
+
+  async function deleteCachedModel(volumeId: string) {
+    deletingVolumeId = volumeId;
+    errorMessage = "";
+    try {
+      await invoke("delete_cached_model", { volumeId });
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      deletingVolumeId = "";
+    }
+  }
+
+  async function addCustomPreset(confirmOutsideRange = false) {
+    if (!selectedGpuTier || customBusy || !customTag.trim()) return;
+    customBusy = true;
+    errorMessage = "";
+    try {
+      const result = await invoke<AddPresetResult>("add_custom_preset", {
+        input: {
+          ollamaTag: customTag.trim(),
+          sizeGb: customSizeGb,
+          minVramGb: customMinVramGb,
+          gpuTypeIds: selectedGpuTier.gpuTypeIds
+        },
+        confirmOutsideRange
+      });
+      if (result.requiresConfirmation) {
+        customWarning = result.warning ?? "outside default hobby range, continue anyway?";
+        return;
+      }
+      if (result.preset) {
+        presets = [...presets, result.preset];
+        selectedId = result.preset.id;
+      }
+      customTag = "";
+      customSizeGb = 5;
+      customMinVramGb = 12;
+      customWarning = "";
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      customBusy = false;
     }
   }
 
@@ -453,8 +572,10 @@
               </div>
               {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
               <div class="storage-row">
-                <span>Persistent storage</span>
-                <button type="button" class="text-button">Manage models</button>
+                <span
+                  >Persistent storage · {cacheBusy ? "reading" : `${totalAllocatedGb} GB allocated`}</span
+                >
+                <button type="button" class="text-button" onclick={openManage}>Manage models</button>
               </div>
               <button
                 class="primary launch-button"
@@ -467,6 +588,144 @@
                   <path d="M3.5 8h9m-3.3-3.3L12.5 8l-3.3 3.3" />
                 </svg>
               </button>
+            </div>
+          </div>
+        {:else if screen === "manage"}
+          <div class="manage-layout">
+            <div class="manage-heading">
+              <button class="back-button" type="button" aria-label="Back" onclick={() => (screen = "idle")}>
+                <svg viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M12.5 8h-9m3.3-3.3L3.5 8l3.3 3.3" />
+                </svg>
+              </button>
+              <div>
+                <p class="eyebrow">Persistent storage</p>
+                <h1>Manage models</h1>
+              </div>
+              <span class="storage-total">{totalAllocatedGb} GB</span>
+            </div>
+
+            <div class="manage-scroll">
+              <div class="section-label">
+                <span>Cached models</span>
+                <span>{cachedModels.length}</span>
+              </div>
+              <div class="cache-list">
+                {#if cacheBusy}
+                  <div class="empty-cache"><span class="loader"></span>Reading RunPod volumes</div>
+                {:else if cachedModels.length === 0}
+                  <div class="empty-cache">No PodPilot model volumes in this account.</div>
+                {:else}
+                  {#each cachedModels as model}
+                    <div class="cache-row">
+                      <span class="cache-icon">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                          <ellipse cx="8" cy="4" rx="5" ry="2" />
+                          <path d="M3 4v4c0 1.1 2.2 2 5 2s5-.9 5-2V4M3 8v4c0 1.1 2.2 2 5 2s5-.9 5-2V8" />
+                        </svg>
+                      </span>
+                      <span class="cache-copy">
+                        <strong>{model.label}</strong>
+                        <small
+                          >~{model.modelSizeGb} GB weights · {model.allocatedGb} GB volume · {model.dataCenterId}</small
+                        >
+                      </span>
+                      <button
+                        class="delete-button"
+                        type="button"
+                        aria-label={`Delete ${model.label} cache`}
+                        title="Delete cached model"
+                        disabled={deletingVolumeId === model.volumeId}
+                        onclick={() => deleteCachedModel(model.volumeId)}
+                      >
+                        {#if deletingVolumeId === model.volumeId}
+                          <span class="stage-spinner"></span>
+                        {:else}
+                          <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path d="M3.5 5h9M6 5V3.5h4V5m1.5 0-.5 8H5L4.5 5m2 2v4m3-4v4" />
+                          </svg>
+                        {/if}
+                      </button>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
+
+              <div class="section-label add-label">
+                <span>Add custom preset</span>
+                <span>Ollama</span>
+              </div>
+              <form
+                class="custom-form"
+                onsubmit={(event) => {
+                  event.preventDefault();
+                  void addCustomPreset(false);
+                }}
+              >
+                <label for="custom-tag">Ollama tag</label>
+                <input
+                  id="custom-tag"
+                  type="text"
+                  bind:value={customTag}
+                  placeholder="qwen2.5-coder:7b"
+                  autocomplete="off"
+                  spellcheck="false"
+                  oninput={() => (customWarning = "")}
+                />
+                <div class="form-pair">
+                  <label>
+                    <span>Model size</span>
+                    <span class="number-field form-number">
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="4000"
+                        step="0.1"
+                        bind:value={customSizeGb}
+                        oninput={() => (customWarning = "")}
+                      />
+                      <span>GB</span>
+                    </span>
+                  </label>
+                  <label>
+                    <span>Minimum VRAM</span>
+                    <span class="number-field form-number">
+                      <input
+                        type="number"
+                        min="1"
+                        max="1024"
+                        step="1"
+                        bind:value={customMinVramGb}
+                        oninput={() => (customWarning = "")}
+                      />
+                      <span>GB</span>
+                    </span>
+                  </label>
+                </div>
+                <label for="gpu-tier">GPU priority tier</label>
+                <select id="gpu-tier" bind:value={customGpuTierId} onchange={() => (customWarning = "")}>
+                  {#each gpuTiers as tier}
+                    <option value={tier.id}>{tier.label} · ~{formatMoney(tier.estCostPerHr)}/hr</option>
+                  {/each}
+                </select>
+                {#if selectedGpuTier}
+                  <p class="gpu-list">{selectedGpuTier.gpuTypeIds.join(" → ")}</p>
+                {/if}
+                {#if customWarning}
+                  <div class="soft-warning">
+                    <span>{customWarning}</span>
+                    <button type="button" onclick={() => addCustomPreset(true)}>Continue anyway</button>
+                  </div>
+                {/if}
+                {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
+                <button
+                  class="secondary-button"
+                  type="submit"
+                  disabled={customBusy || !customTag.trim() || !selectedGpuTier}
+                >
+                  {customBusy ? "Validating preset" : "Add preset"}
+                </button>
+              </form>
             </div>
           </div>
         {:else if screen === "launching"}
