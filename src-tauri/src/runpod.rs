@@ -6,6 +6,8 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub const RUNPOD_BASE_URL: &str = "https://rest.runpod.io/v1";
+const MODEL_VOLUME_PREFIX: &str = "mintpod-";
+const LEGACY_MODEL_VOLUME_PREFIX: &str = "podpilot-";
 
 #[derive(Debug, Error)]
 pub enum RunpodError {
@@ -34,7 +36,7 @@ impl RunpodClient {
         }
 
         let http = Client::builder()
-            .user_agent(concat!("PodPilot/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("mintPod/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()?;
@@ -121,12 +123,15 @@ impl RunpodClient {
         size: u16,
         data_center_id: &str,
     ) -> Result<NetworkVolume, RunpodError> {
-        let name = format!("podpilot-{preset_id}");
+        let name = format!("{MODEL_VOLUME_PREFIX}{preset_id}");
         let existing = self
             .list_network_volumes()
             .await?
             .into_iter()
-            .find(|volume| volume.name == name && volume.data_center_id == data_center_id);
+            .find(|volume| {
+                model_volume_preset_id(&volume.name) == Some(preset_id)
+                    && volume.data_center_id == data_center_id
+            });
 
         match existing {
             Some(volume) if volume.size >= size => Ok(volume),
@@ -176,6 +181,11 @@ impl RunpodClient {
             .await
             .map_err(|error| RunpodError::InvalidResponse(error.to_string()))
     }
+}
+
+pub fn model_volume_preset_id(name: &str) -> Option<&str> {
+    name.strip_prefix(MODEL_VOLUME_PREFIX)
+        .or_else(|| name.strip_prefix(LEGACY_MODEL_VOLUME_PREFIX))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -378,13 +388,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_volumes_accept_current_and_legacy_names() {
+        assert_eq!(
+            model_volume_preset_id("mintpod-qwen-coder-7b"),
+            Some("qwen-coder-7b")
+        );
+        assert_eq!(
+            model_volume_preset_id("podpilot-qwen-coder-7b"),
+            Some("qwen-coder-7b")
+        );
+        assert_eq!(model_volume_preset_id("unrelated-volume"), None);
+    }
+
+    #[test]
     fn ollama_request_keeps_models_on_the_mounted_volume() {
         let request = CreatePodRequest::ollama(
-            "podpilot-coder".to_owned(),
+            "mintpod-coder".to_owned(),
             vec!["NVIDIA GeForce RTX 4090".to_owned()],
             &NetworkVolume {
                 id: "volume-1".to_owned(),
-                name: "podpilot-coder".to_owned(),
+                name: "mintpod-coder".to_owned(),
                 size: 12,
                 data_center_id: "EU-RO-1".to_owned(),
             },

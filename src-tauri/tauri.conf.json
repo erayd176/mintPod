@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PodPilot",
+  "productName": "mintPod",
   "version": "0.1.0",
-  "identifier": "dev.podpilot.desktop",
+  "identifier": "dev.mintpod",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -16,7 +16,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PodPilot",
+        "title": "mintPod",
         "width": 390,
         "height": 520,
         "minWidth": 390,

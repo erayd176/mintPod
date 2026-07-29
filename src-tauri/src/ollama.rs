@@ -35,7 +35,7 @@ pub struct OllamaClient {
 impl OllamaClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self, OllamaError> {
         let http = Client::builder()
-            .user_agent(concat!("PodPilot/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("mintPod/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {

@@ -605,7 +605,7 @@
   <header class="titlebar" data-tauri-drag-region>
     <div class="brand" data-tauri-drag-region>
       <span class="brand-mark"></span>
-      <span data-tauri-drag-region>PodPilot</span>
+      <span data-tauri-drag-region>mintPod</span>
     </div>
     <div class="window-actions">
       <button
@@ -657,7 +657,7 @@
               <p class="eyebrow">RunPod access</p>
               <h1>Connect your account</h1>
               <p class="lede">
-                PodPilot validates the key once, then keeps it in the operating system keychain.
+                mintPod validates the key once, then keeps it in the operating system keychain.
               </p>
             </div>
             <form onsubmit={(event) => { event.preventDefault(); void saveApiKey(); }}>
@@ -957,7 +957,7 @@
                 {#if cacheBusy}
                   <div class="empty-cache"><span class="loader"></span>Reading RunPod volumes</div>
                 {:else if cachedModels.length === 0}
-                  <div class="empty-cache">No PodPilot model volumes in this account.</div>
+                  <div class="empty-cache">No mintPod model volumes in this account.</div>
                 {:else}
                   {#each cachedModels as model}
                     <div class="cache-row">
@@ -1133,7 +1133,7 @@
                 </li>
               {/each}
             </ol>
-            <p class="launch-note">Closing PodPilot during launch does not stop the remote pod.</p>
+            <p class="launch-note">Closing mintPod during launch does not stop the remote pod.</p>
           </div>
         {:else if screen === "running" && session}
           <div class="running-layout">

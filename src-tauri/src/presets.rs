@@ -354,7 +354,7 @@ mod tests {
 
     fn missing_user_file() -> PathBuf {
         std::env::temp_dir().join(format!(
-            "podpilot-presets-{}-missing.json",
+            "mintpod-presets-{}-missing.json",
             std::process::id()
         ))
     }
@@ -424,7 +424,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory =
-            std::env::temp_dir().join(format!("podpilot-presets-{}-{nonce}", std::process::id(),));
+            std::env::temp_dir().join(format!("mintpod-presets-{}-{nonce}", std::process::id(),));
         fs::create_dir_all(&directory).unwrap();
         let user_file = directory.join("presets.user.json");
         let mut catalog = PresetCatalog::load(&user_file).unwrap();

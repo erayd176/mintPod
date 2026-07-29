@@ -114,7 +114,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let directory =
-            std::env::temp_dir().join(format!("podpilot-history-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("mintpod-history-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
         let path = directory.join("session-history.json");
         let entries = (0..7)

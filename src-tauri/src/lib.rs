@@ -16,6 +16,33 @@ mod settings;
 mod state;
 
 #[cfg(feature = "desktop-runtime")]
+fn migrate_legacy_config(config_dir: &std::path::Path) -> Result<(), std::io::Error> {
+    let Some(base) = dirs::config_dir() else {
+        return Ok(());
+    };
+    let legacy_dir = base.join("dev.podpilot.desktop");
+    if !legacy_dir.is_dir() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(config_dir)?;
+    for name in [
+        "api-keys.json",
+        "settings.json",
+        "presets.user.json",
+        "session-history.json",
+        "fx-rate.json",
+    ] {
+        let source = legacy_dir.join(name);
+        let destination = config_dir.join(name);
+        if source.is_file() && !destination.exists() {
+            std::fs::copy(source, destination)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "desktop-runtime")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use std::sync::{
@@ -27,6 +54,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
+            migrate_legacy_config(&config_dir)?;
             std::fs::create_dir_all(&config_dir)?;
             app.manage(state::AppState::load(config_dir)?);
             let window = app
@@ -69,5 +97,5 @@ pub fn run() {
             commands::stop_session
         ])
         .run(tauri::generate_context!())
-        .expect("failed to run PodPilot");
+        .expect("failed to run mintPod");
 }

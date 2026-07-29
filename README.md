@@ -1,6 +1,6 @@
-# PodPilot
+# mintPod
 
-PodPilot is a small desktop control panel for running a coding model on RunPod without turning pod lifecycle management into a second job. Pick a curated model, set a hard time or EUR budget, and launch. PodPilot provisions the GPU, keeps the model on a persistent Network Volume, waits for Ollama to become genuinely ready, and exposes the model to Pi through an authenticated loopback proxy.
+mintPod is a small desktop control panel for running a coding model on RunPod without turning pod lifecycle management into a second job. Pick a curated model, set a hard time or EUR budget, and launch. mintPod provisions the GPU, keeps the model on a persistent Network Volume, waits for Ollama to become genuinely ready, and exposes the model to Pi through an authenticated loopback proxy.
 
 ## What it does
 
@@ -44,7 +44,7 @@ See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for mac
 
 ```sh
 git clone <your-fork-or-clone-url>
-cd podpilot
+cd mintpod
 npm ci
 cargo install tauri-cli --version "^2" --locked
 cargo tauri dev
@@ -53,11 +53,11 @@ cargo tauri dev
 On first launch:
 
 1. Create or copy an API key from the RunPod console.
-2. Give the key a local name and paste it into PodPilot.
+2. Give the key a local name and paste it into mintPod.
 3. Select the Network Volume region closest to the GPU region you intend to use.
 4. Save the key.
 
-The key is validated against RunPod before it is stored. PodPilot uses macOS Keychain, Windows Credential Manager, or the Linux Secret Service through the Rust `keyring` crate. It is never written to a JSON file. Add, replace, remove, or switch named keys under **Manage**; the compact selector on the launch screen shows which profile is active.
+The key is validated against RunPod before it is stored. mintPod uses macOS Keychain, Windows Credential Manager, or the Linux Secret Service through the Rust `keyring` crate. It is never written to a JSON file. Add, replace, remove, or switch named keys under **Manage**; the compact selector on the launch screen shows which profile is active.
 
 ## Launch and verify Pi
 
@@ -70,21 +70,21 @@ $ pi
 > /models
 ```
 
-Choose the `podpilot` provider and the model shown in PodPilot. The running screen also copies a direct command:
+Choose the `mintpod` provider and the model shown in mintPod. The running screen also copies a direct command:
 
 ```sh
-pi --provider podpilot --model qwen2.5-coder:7b
+pi --provider mintpod --model qwen2.5-coder:7b
 ```
 
-PodPilot merges the provider into `~/.pi/agent/models.json`, which current Pi releases read, and maintains the requested `~/.pi/agent/local-models.json` endpoint contract for compatibility. Existing providers and unknown fields are preserved. Both files contain only the short-lived local proxy token, never the RunPod key.
+mintPod merges the provider into `~/.pi/agent/models.json`, which current Pi releases read, and maintains the requested `~/.pi/agent/local-models.json` endpoint contract for compatibility. Existing providers and unknown fields are preserved. Both files contain only the short-lived local proxy token, never the RunPod key.
 
 ## Storage and cost behavior
 
-Each preset gets its own Network Volume named `podpilot-<preset-id>`. Stopping or terminating a pod leaves that volume intact, which is why the next launch skips the model download. Network Volumes can continue to incur storage charges while no GPU is running; use **Manage models** to delete a cache you no longer want.
+Each preset gets its own Network Volume named `mintpod-<preset-id>`. Volumes created by versions released under the previous name remain compatible and are reused automatically. Stopping or terminating a pod leaves that volume intact, which is why the next launch skips the model download. Network Volumes can continue to incur storage charges while no GPU is running; use **Manage models** to delete a cache you no longer want.
 
-RunPod reports the live hourly GPU rate. PodPilot resyncs it every 30 seconds and converts USD to EUR using the ECB daily reference rate. If the ECB is unavailable and no cached rate exists, it uses a conservative 1:1 conversion so a EUR cost limit stops early rather than late.
+RunPod reports the live hourly GPU rate. mintPod resyncs it every 30 seconds and converts USD to EUR using the ECB daily reference rate. If the ECB is unavailable and no cached rate exists, it uses a conservative 1:1 conversion so a EUR cost limit stops early rather than late.
 
-An automatic stop releases the GPU immediately. The stopped pod remains resumable for five minutes, then PodPilot terminates it. The Network Volume is not touched. Closing PodPilot during a launch or session first completes the safe stop/termination path.
+An automatic stop releases the GPU immediately. The stopped pod remains resumable for five minutes, then mintPod terminates it. The Network Volume is not touched. Closing mintPod during a launch or session first completes the safe stop/termination path.
 
 ## Add a model
 

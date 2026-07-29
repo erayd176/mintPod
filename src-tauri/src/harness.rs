@@ -12,7 +12,8 @@ use thiserror::Error;
 use crate::presets::Preset;
 
 pub const LOCAL_PROXY_URL: &str = "http://127.0.0.1:8080";
-const PI_PROVIDER_ID: &str = "podpilot";
+const PI_PROVIDER_ID: &str = "mintpod";
+const LEGACY_PI_PROVIDER_ID: &str = "podpilot";
 
 pub struct HarnessConnection<'a> {
     pub url: &'a str,
@@ -152,15 +153,30 @@ fn merge_current_pi_config(
             path: path.to_owned(),
             location: "providers",
         })?;
+    let legacy_provider = providers.remove(LEGACY_PI_PROVIDER_ID);
     if !providers.contains_key(PI_PROVIDER_ID) {
-        providers.insert(PI_PROVIDER_ID.to_owned(), Value::Object(Map::new()));
+        providers.insert(
+            PI_PROVIDER_ID.to_owned(),
+            legacy_provider.unwrap_or_else(|| Value::Object(Map::new())),
+        );
+    } else if let Some(Value::Object(legacy)) = legacy_provider {
+        let current = providers
+            .get_mut(PI_PROVIDER_ID)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| HarnessError::InvalidShape {
+                path: path.to_owned(),
+                location: "providers.mintpod",
+            })?;
+        for (key, value) in legacy {
+            current.entry(key).or_insert(value);
+        }
     }
     let provider = providers
         .get_mut(PI_PROVIDER_ID)
         .and_then(Value::as_object_mut)
         .ok_or_else(|| HarnessError::InvalidShape {
             path: path.to_owned(),
-            location: "providers.podpilot",
+            location: "providers.mintpod",
         })?;
 
     provider.insert(
@@ -291,7 +307,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("podpilot-harness-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!("mintpod-harness-{}-{nonce}", std::process::id()))
     }
 
     fn preset() -> Preset {
@@ -317,7 +333,7 @@ mod tests {
                 "customRoot": true,
                 "providers": {
                     "company": {"baseUrl": "https://internal.example/v1"},
-                    "podpilot": {"customHeader": "preserve"}
+                    "mintpod": {"customHeader": "preserve"}
                 }
             }"#,
         )
@@ -340,13 +356,13 @@ mod tests {
             current["providers"]["company"]["baseUrl"],
             "https://internal.example/v1"
         );
-        assert_eq!(current["providers"]["podpilot"]["customHeader"], "preserve");
+        assert_eq!(current["providers"]["mintpod"]["customHeader"], "preserve");
         assert_eq!(
-            current["providers"]["podpilot"]["baseUrl"],
+            current["providers"]["mintpod"]["baseUrl"],
             "http://127.0.0.1:8080/v1"
         );
         assert_eq!(
-            current["providers"]["podpilot"]["models"][0]["id"],
+            current["providers"]["mintpod"]["models"][0]["id"],
             "qwen2.5-coder:7b"
         );
         let legacy: Value =
@@ -354,6 +370,42 @@ mod tests {
                 .unwrap();
         assert_eq!(legacy["url"], LOCAL_PROXY_URL);
         assert_eq!(legacy["apiKey"], "secret");
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn pi_merge_migrates_the_legacy_provider_name() {
+        let directory = test_dir();
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join("models.json"),
+            r#"{
+                "providers": {
+                    "podpilot": {"customHeader": "preserve"}
+                }
+            }"#,
+        )
+        .unwrap();
+        let adapter = PiAdapter::at(directory.clone());
+        let model = preset();
+
+        adapter
+            .wire(&HarnessConnection {
+                url: LOCAL_PROXY_URL,
+                api_key: "secret",
+                preset: &model,
+            })
+            .unwrap();
+
+        let current: Value =
+            serde_json::from_slice(&fs::read(directory.join("models.json")).unwrap()).unwrap();
+        assert!(current["providers"].get("podpilot").is_none());
+        assert_eq!(current["providers"]["mintpod"]["customHeader"], "preserve");
+        assert_eq!(
+            current["providers"]["mintpod"]["models"][0]["id"],
+            "qwen2.5-coder:7b"
+        );
 
         fs::remove_dir_all(directory).unwrap();
     }

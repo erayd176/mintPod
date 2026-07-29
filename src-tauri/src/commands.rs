@@ -12,7 +12,7 @@ use crate::{
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
     proxy::LocalProxy,
-    runpod::{Pod, RunpodClient, RunpodError},
+    runpod::{Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, GraceSession, SessionView},
 };
@@ -133,7 +133,7 @@ pub async fn list_cached_models(state: State<'_, AppState>) -> Result<CacheSumma
     let mut models = volumes
         .into_iter()
         .filter_map(|volume| {
-            let preset_id = volume.name.strip_prefix("podpilot-")?.to_owned();
+            let preset_id = model_volume_preset_id(&volume.name)?.to_owned();
             let preset = catalog.find(&preset_id);
             Some(CachedModel {
                 volume_id: volume.id,
@@ -184,7 +184,7 @@ pub async fn delete_cached_model(
         .await
         .map_err(|error| error.to_string())?
         .into_iter()
-        .find(|volume| volume.id == volume_id && volume.name.starts_with("podpilot-"))
+        .find(|volume| volume.id == volume_id && model_volume_preset_id(&volume.name).is_some())
         .ok_or_else(|| "cached model volume was not found".to_owned())?;
     runpod
         .delete_network_volume(&volume.id)

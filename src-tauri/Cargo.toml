@@ -1,5 +1,5 @@
 [package]
-name = "podpilot"
+name = "mintpod"
 version = "0.1.0"
 description = "Launch a RunPod model and wire it into local coding agents"
 authors = ["Eray Dogan"]
@@ -8,11 +8,11 @@ edition = "2024"
 rust-version = "1.88"
 
 [lib]
-name = "podpilot_lib"
+name = "mintpod_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "podpilot"
+name = "mintpod"
 path = "src/main.rs"
 required-features = ["desktop-runtime"]
 

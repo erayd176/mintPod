@@ -2311,6 +2311,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mintpod"
+version = "0.1.0"
+dependencies = [
+ "atomic-write-file",
+ "axum",
+ "dbus",
+ "dirs",
+ "futures-util",
+ "getrandom 0.3.4",
+ "jsonschema",
+ "keyring",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2891,27 +2912,6 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide",
-]
-
-[[package]]
-name = "podpilot"
-version = "0.1.0"
-dependencies = [
- "atomic-write-file",
- "axum",
- "dbus",
- "dirs",
- "futures-util",
- "getrandom 0.3.4",
- "jsonschema",
- "keyring",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]

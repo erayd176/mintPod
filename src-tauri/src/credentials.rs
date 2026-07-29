@@ -10,7 +10,8 @@ use keyring::v1::{Entry, Error as KeyringError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const SERVICE: &str = "dev.podpilot.desktop";
+const SERVICE: &str = "dev.mintpod";
+const LEGACY_SERVICE: &str = "dev.podpilot.desktop";
 const LEGACY_ID: &str = "legacy";
 const LEGACY_USER: &str = "runpod-api-key";
 const USER_PREFIX: &str = "runpod-api-key-";
@@ -303,7 +304,16 @@ fn generate_id(index: &CredentialIndex) -> Result<String, CredentialError> {
 fn entry_exists(profile_id: &str) -> Result<bool, CredentialError> {
     match entry(profile_id)?.get_password() {
         Ok(_) => Ok(true),
-        Err(KeyringError::NoEntry) => Ok(false),
+        Err(KeyringError::NoEntry) => match legacy_entry(profile_id)?.get_password() {
+            Ok(key) => {
+                entry(profile_id)?
+                    .set_password(&key)
+                    .map_err(keychain_error)?;
+                Ok(true)
+            }
+            Err(KeyringError::NoEntry) => Ok(false),
+            Err(error) => Err(keychain_error(error)),
+        },
         Err(error) => Err(keychain_error(error)),
     }
 }
@@ -311,25 +321,47 @@ fn entry_exists(profile_id: &str) -> Result<bool, CredentialError> {
 fn read_entry(profile_id: &str) -> Result<String, CredentialError> {
     match entry(profile_id)?.get_password() {
         Ok(key) => Ok(key),
-        Err(KeyringError::NoEntry) => Err(CredentialError::MissingProfile(profile_id.to_owned())),
+        Err(KeyringError::NoEntry) => match legacy_entry(profile_id)?.get_password() {
+            Ok(key) => {
+                entry(profile_id)?
+                    .set_password(&key)
+                    .map_err(keychain_error)?;
+                Ok(key)
+            }
+            Err(KeyringError::NoEntry) => {
+                Err(CredentialError::MissingProfile(profile_id.to_owned()))
+            }
+            Err(error) => Err(keychain_error(error)),
+        },
         Err(error) => Err(keychain_error(error)),
     }
 }
 
 fn delete_entry(profile_id: &str) -> Result<(), CredentialError> {
-    match entry(profile_id)?.delete_credential() {
-        Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(error) => Err(keychain_error(error)),
+    for candidate in [entry(profile_id)?, legacy_entry(profile_id)?] {
+        match candidate.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(error) => return Err(keychain_error(error)),
+        }
     }
+    Ok(())
 }
 
 fn entry(profile_id: &str) -> Result<Entry, CredentialError> {
+    service_entry(SERVICE, profile_id)
+}
+
+fn legacy_entry(profile_id: &str) -> Result<Entry, CredentialError> {
+    service_entry(LEGACY_SERVICE, profile_id)
+}
+
+fn service_entry(service: &str, profile_id: &str) -> Result<Entry, CredentialError> {
     let user = if profile_id == LEGACY_ID {
         LEGACY_USER.to_owned()
     } else {
         format!("{USER_PREFIX}{profile_id}")
     };
-    Entry::new(SERVICE, &user).map_err(keychain_error)
+    Entry::new(service, &user).map_err(keychain_error)
 }
 
 fn keychain_error(error: KeyringError) -> CredentialError {

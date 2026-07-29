@@ -1,3 +1,3 @@
 fn main() {
-    podpilot_lib::run();
+    mintpod_lib::run();
 }

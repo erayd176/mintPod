@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://podpilot.dev/schemas/preset.json",
-  "title": "PodPilot model preset",
+  "$id": "https://mintpod.dev/schemas/preset.json",
+  "title": "mintPod model preset",
   "type": "object",
   "additionalProperties": false,
   "required": [

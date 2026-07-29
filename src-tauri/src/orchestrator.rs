@@ -92,7 +92,7 @@ impl LaunchOrchestrator {
             "Requesting GPU capacity",
         );
         let request = CreatePodRequest::ollama(
-            format!("podpilot-{}", preset.id),
+            format!("mintpod-{}", preset.id),
             preset.gpu_type_ids.clone(),
             &network_volume,
             preset.volume_size_gb(),

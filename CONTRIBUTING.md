@@ -1,6 +1,6 @@
-# Contributing to PodPilot
+# Contributing to mintPod
 
-PodPilot is deliberately narrow. Changes should make the launch-to-agent path safer, clearer, or easier to maintain without introducing accounts, telemetry, chat UI, cloud sync, free-form GPU selection, or another configuration layer.
+mintPod is deliberately narrow. Changes should make the launch-to-agent path safer, clearer, or easier to maintain without introducing accounts, telemetry, chat UI, cloud sync, free-form GPU selection, or another configuration layer.
 
 ## Before changing code
 
@@ -56,7 +56,7 @@ Then perform one real RunPod verification:
 - The pod mounts the expected Network Volume at `/root/.ollama`.
 - Pulling reports byte progress from Ollama rather than a timer.
 - The model answers an OpenAI-compatible request through `127.0.0.1:8080`.
-- `pi`, followed by `/models`, lists the `podpilot` provider and the exact Ollama tag.
+- `pi`, followed by `/models`, lists the `mintpod` provider and the exact Ollama tag.
 - A stop releases the GPU without deleting the Network Volume.
 - A second launch reports the model as cached and reaches warm state without pulling it again.
 - Idle timeout and the selected budget both stop the pod when tested with short safe values.
@@ -69,7 +69,7 @@ GPU tiers live in `src-tauri/src/presets.rs`. They are ranked lists. Reordering 
 
 ## Pull request checklist
 
-- The change stays within PodPilot's stated scope.
+- The change stays within mintPod's stated scope.
 - New JSON persists atomically and malformed user data fails with a useful error.
 - The RunPod key never leaves the OS keychain.
 - Existing Pi providers survive a wiring update unchanged.
