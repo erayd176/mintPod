@@ -2811,6 +2811,7 @@ name = "podpilot"
 version = "0.1.0"
 dependencies = [
  "dbus",
+ "futures-util",
  "jsonschema",
  "keyring",
  "reqwest",
@@ -2819,6 +2820,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]
