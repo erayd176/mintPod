@@ -83,6 +83,57 @@ impl RunpodClient {
         ensure_success(response).await.map(|_| ())
     }
 
+    pub async fn list_network_volumes(&self) -> Result<Vec<NetworkVolume>, RunpodError> {
+        self.send_json(self.get("/networkvolumes")).await
+    }
+
+    pub async fn create_network_volume(
+        &self,
+        request: &CreateNetworkVolumeRequest,
+    ) -> Result<NetworkVolume, RunpodError> {
+        self.send_json(self.post("/networkvolumes").json(request))
+            .await
+    }
+
+    pub async fn resize_network_volume(
+        &self,
+        volume_id: &str,
+        size: u16,
+    ) -> Result<NetworkVolume, RunpodError> {
+        self.send_json(
+            self.patch(&format!("/networkvolumes/{volume_id}"))
+                .json(&serde_json::json!({ "size": size })),
+        )
+        .await
+    }
+
+    pub async fn ensure_model_volume(
+        &self,
+        preset_id: &str,
+        size: u16,
+        data_center_id: &str,
+    ) -> Result<NetworkVolume, RunpodError> {
+        let name = format!("podpilot-{preset_id}");
+        let existing = self
+            .list_network_volumes()
+            .await?
+            .into_iter()
+            .find(|volume| volume.name == name && volume.data_center_id == data_center_id);
+
+        match existing {
+            Some(volume) if volume.size >= size => Ok(volume),
+            Some(volume) => self.resize_network_volume(&volume.id, size).await,
+            None => {
+                self.create_network_volume(&CreateNetworkVolumeRequest {
+                    name,
+                    size,
+                    data_center_id: data_center_id.to_owned(),
+                })
+                .await
+            }
+        }
+    }
+
     fn get(&self, path: &str) -> RequestBuilder {
         self.http
             .get(format!("{}{path}", self.base_url))
@@ -98,6 +149,12 @@ impl RunpodClient {
     fn delete(&self, path: &str) -> RequestBuilder {
         self.http
             .delete(format!("{}{path}", self.base_url))
+            .bearer_auth(self.api_key.as_ref())
+    }
+
+    fn patch(&self, path: &str) -> RequestBuilder {
+        self.http
+            .patch(format!("{}{path}", self.base_url))
             .bearer_auth(self.api_key.as_ref())
     }
 
@@ -121,6 +178,9 @@ pub struct CreatePodRequest {
     pub gpu_type_ids: Vec<String>,
     pub gpu_type_priority: &'static str,
     pub gpu_count: u8,
+    pub cloud_type: &'static str,
+    pub data_center_ids: Vec<String>,
+    pub data_center_priority: &'static str,
     pub container_disk_in_gb: u16,
     pub network_volume_id: String,
     pub volume_in_gb: u16,
@@ -133,7 +193,7 @@ impl CreatePodRequest {
     pub fn ollama(
         name: String,
         gpu_type_ids: Vec<String>,
-        network_volume_id: String,
+        network_volume: &NetworkVolume,
         volume_in_gb: u16,
     ) -> Self {
         Self {
@@ -142,8 +202,11 @@ impl CreatePodRequest {
             gpu_type_ids,
             gpu_type_priority: "custom",
             gpu_count: 1,
+            cloud_type: "SECURE",
+            data_center_ids: vec![network_volume.data_center_id.clone()],
+            data_center_priority: "custom",
             container_disk_in_gb: 20,
-            network_volume_id,
+            network_volume_id: network_volume.id.clone(),
             volume_in_gb,
             volume_mount_path: "/root/.ollama",
             ports: vec!["11434/http"],
@@ -153,6 +216,14 @@ impl CreatePodRequest {
             ]),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateNetworkVolumeRequest {
+    pub name: String,
+    pub size: u16,
+    pub data_center_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -249,7 +320,12 @@ mod tests {
         let request = CreatePodRequest::ollama(
             "podpilot-coder".to_owned(),
             vec!["NVIDIA GeForce RTX 4090".to_owned()],
-            "volume-1".to_owned(),
+            &NetworkVolume {
+                id: "volume-1".to_owned(),
+                name: "podpilot-coder".to_owned(),
+                size: 12,
+                data_center_id: "EU-RO-1".to_owned(),
+            },
             12,
         );
         let json = serde_json::to_value(request).unwrap();
@@ -259,6 +335,8 @@ mod tests {
         assert_eq!(json["env"]["OLLAMA_MODELS"], "/root/.ollama/models");
         assert_eq!(json["env"]["OLLAMA_KEEP_ALIVE"], "-1");
         assert_eq!(json["gpuTypePriority"], "custom");
+        assert_eq!(json["dataCenterIds"], serde_json::json!(["EU-RO-1"]));
+        assert_eq!(json["cloudType"], "SECURE");
     }
 
     #[test]

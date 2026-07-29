@@ -81,7 +81,7 @@ impl LaunchOrchestrator {
     pub async fn launch(
         &self,
         preset: Preset,
-        network_volume_id: String,
+        network_volume: crate::runpod::NetworkVolume,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
         send_stage(
@@ -92,7 +92,7 @@ impl LaunchOrchestrator {
         let request = CreatePodRequest::ollama(
             format!("podpilot-{}", preset.id),
             preset.gpu_type_ids.clone(),
-            network_volume_id,
+            &network_volume,
             preset.volume_size_gb(),
         );
         let started_at_epoch_ms = now_epoch_ms();
