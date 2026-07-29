@@ -1,7 +1,7 @@
 use keyring::v1::{Entry, Error as KeyringError};
 use thiserror::Error;
 
-const SERVICE: &str = "dev.podpilot.app";
+const SERVICE: &str = "dev.podpilot.desktop";
 const USER: &str = "runpod-api-key";
 
 #[derive(Debug, Error)]
