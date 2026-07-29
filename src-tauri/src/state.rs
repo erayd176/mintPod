@@ -6,14 +6,23 @@ use std::{
 use tokio::sync::Mutex;
 
 use crate::{
+    harness::WiringReceipt,
     orchestrator::RunningSession,
     presets::{PresetCatalog, PresetError},
     proxy::LocalProxy,
     settings::{AppSettings, SettingsError, SettingsStore},
 };
 
-pub struct ActiveSession {
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionView {
+    #[serde(flatten)]
     pub session: RunningSession,
+    pub wiring: WiringReceipt,
+}
+
+pub struct ActiveSession {
+    pub view: SessionView,
     pub proxy: LocalProxy,
 }
 
@@ -86,9 +95,16 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn finish_launch(&self, session: RunningSession, proxy: LocalProxy) {
-        *self.runtime.lock().await =
-            RuntimeState::Running(Box::new(ActiveSession { session, proxy }));
+    pub async fn finish_launch(
+        &self,
+        session: RunningSession,
+        wiring: WiringReceipt,
+        proxy: LocalProxy,
+    ) {
+        *self.runtime.lock().await = RuntimeState::Running(Box::new(ActiveSession {
+            view: SessionView { session, wiring },
+            proxy,
+        }));
     }
 
     pub async fn fail_launch(&self) {

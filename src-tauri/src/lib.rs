@@ -3,6 +3,7 @@
 #[cfg(feature = "desktop-runtime")]
 mod commands;
 mod credentials;
+mod harness;
 mod ollama;
 mod orchestrator;
 mod presets;

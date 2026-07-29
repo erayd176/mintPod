@@ -2,12 +2,13 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     credentials::CredentialStore,
+    harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
     presets::PresetView,
     proxy::LocalProxy,
     runpod::RunpodClient,
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
-    state::AppState,
+    state::{AppState, SessionView},
 };
 
 #[tauri::command]
@@ -68,7 +69,7 @@ pub async fn launch_preset(
     preset_id: String,
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<RunningSession, String> {
+) -> Result<SessionView, String> {
     state
         .begin_launch()
         .await
@@ -76,9 +77,11 @@ pub async fn launch_preset(
 
     let result = launch_preset_inner(&preset_id, &app, &state).await;
     match result {
-        Ok((session, proxy)) => {
-            state.finish_launch(session.clone(), proxy).await;
-            Ok(session)
+        Ok((session, wiring, proxy)) => {
+            state
+                .finish_launch(session.clone(), wiring.clone(), proxy)
+                .await;
+            Ok(SessionView { session, wiring })
         }
         Err(error) => {
             state.fail_launch().await;
@@ -91,7 +94,7 @@ async fn launch_preset_inner(
     preset_id: &str,
     app: &AppHandle,
     state: &State<'_, AppState>,
-) -> Result<(RunningSession, LocalProxy), String> {
+) -> Result<(RunningSession, WiringReceipt, LocalProxy), String> {
     let preset = state
         .presets()
         .map_err(|_| "preset catalog lock is poisoned".to_owned())?
@@ -131,7 +134,7 @@ async fn launch_preset_inner(
         }
     });
     let session = LaunchOrchestrator::new(runpod.clone())
-        .launch(preset, volume, events_tx)
+        .launch(preset.clone(), volume, events_tx)
         .await
         .map_err(|error| error.to_string())?;
     let _ = forward.await;
@@ -143,17 +146,36 @@ async fn launch_preset_inner(
             return Err(error.to_string());
         }
     };
-    app.emit(
+    let adapter = match PiAdapter::system() {
+        Ok(adapter) => adapter,
+        Err(error) => {
+            proxy.shutdown().await;
+            let _ = runpod.stop_pod(&session.pod_id).await;
+            return Err(error.to_string());
+        }
+    };
+    let wiring = match adapter.wire(&HarnessConnection {
+        url: LOCAL_PROXY_URL,
+        api_key: proxy.token(),
+        preset: &preset,
+    }) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            proxy.shutdown().await;
+            let _ = runpod.stop_pod(&session.pod_id).await;
+            return Err(error.to_string());
+        }
+    };
+    let _ = app.emit(
         "launch-progress",
         LaunchEvent {
             stage: LaunchStage::Ready,
-            detail: "Local endpoint secured".to_owned(),
+            detail: "Wired into Pi".to_owned(),
             completed_bytes: None,
             total_bytes: None,
             skipped: false,
         },
-    )
-    .map_err(|error| error.to_string())?;
+    );
 
-    Ok((session, proxy))
+    Ok((session, wiring, proxy))
 }
