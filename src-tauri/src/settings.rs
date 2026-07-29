@@ -1,8 +1,10 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
+use atomic_write_file::AtomicWriteFile;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -76,7 +78,17 @@ impl SettingsStore {
                 path: path.to_owned(),
                 message: error.to_string(),
             })?;
-        fs::write(path, format!("{contents}\n")).map_err(|error| SettingsError::Write {
+        let mut file = AtomicWriteFile::open(path).map_err(|error| SettingsError::Write {
+            path: path.to_owned(),
+            message: error.to_string(),
+        })?;
+        file.write_all(format!("{contents}\n").as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|error| SettingsError::Write {
+                path: path.to_owned(),
+                message: error.to_string(),
+            })?;
+        file.commit().map_err(|error| SettingsError::Write {
             path: path.to_owned(),
             message: error.to_string(),
         })

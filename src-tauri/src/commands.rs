@@ -8,11 +8,11 @@ use crate::{
     fx,
     harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
     history::{self, SessionHistoryEntry},
-    lifecycle::{BudgetTracker, LaunchBudget, SessionTelemetry, StopReason},
+    lifecycle::{BudgetTracker, LaunchBudget, StopReason},
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
     proxy::LocalProxy,
-    runpod::RunpodClient,
+    runpod::{Pod, RunpodClient, RunpodError},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, GraceSession, SessionView},
 };
@@ -274,17 +274,14 @@ pub async fn launch_preset(
     match result {
         Ok((session, wiring, proxy, runpod, usd_to_eur)) => {
             let cost_per_hr_eur = session.cost_per_hr_usd * usd_to_eur;
-            let view = state
-                .finish_launch(
-                    session,
-                    wiring,
-                    budget,
-                    idle_timeout_minutes,
-                    cost_per_hr_eur,
-                    proxy,
-                    runpod.clone(),
-                )
-                .await;
+            let view = SessionView {
+                session,
+                wiring,
+                budget,
+                idle_timeout_minutes,
+                cost_per_hr_eur,
+            };
+            let view = state.finish_launch(view, proxy, runpod.clone()).await;
             spawn_session_monitor(app, view.clone(), runpod, usd_to_eur);
             Ok(view)
         }
@@ -439,7 +436,7 @@ fn spawn_session_monitor(app: AppHandle, view: SessionView, runpod: RunpodClient
             }
         };
         let mut ticks = 0_u64;
-        let mut resync = None;
+        let mut resync: Option<tokio::task::JoinHandle<Result<Pod, RunpodError>>> = None;
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 

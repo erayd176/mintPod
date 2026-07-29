@@ -42,7 +42,6 @@ pub struct GraceSession {
 
 #[derive(Clone)]
 pub struct SessionSample {
-    pub view: SessionView,
     pub last_request_epoch_ms: u64,
 }
 
@@ -57,7 +56,7 @@ pub enum ExitAction {
     Exit,
     WaitForLaunch,
     Stop(String),
-    Terminate(GraceSession),
+    Terminate(Box<GraceSession>),
 }
 
 pub struct AppState {
@@ -150,21 +149,10 @@ impl AppState {
 
     pub async fn finish_launch(
         &self,
-        session: RunningSession,
-        wiring: WiringReceipt,
-        budget: LaunchBudget,
-        idle_timeout_minutes: u16,
-        cost_per_hr_eur: f64,
+        view: SessionView,
         proxy: LocalProxy,
         runpod: RunpodClient,
     ) -> SessionView {
-        let view = SessionView {
-            session,
-            wiring,
-            budget,
-            idle_timeout_minutes,
-            cost_per_hr_eur,
-        };
         *self.runtime.lock().await = RuntimeState::Running(Box::new(ActiveSession {
             view: view.clone(),
             proxy,
@@ -184,7 +172,6 @@ impl AppState {
             return None;
         };
         (active.view.session.pod_id == pod_id).then(|| SessionSample {
-            view: active.view.clone(),
             last_request_epoch_ms: active.proxy.last_request_epoch_ms(),
         })
     }
@@ -258,7 +245,7 @@ impl AppState {
                 let RuntimeState::Grace(grace) = previous else {
                     unreachable!("runtime state was checked while locked")
                 };
-                ExitAction::Terminate(*grace)
+                ExitAction::Terminate(grace)
             }
         }
     }

@@ -45,13 +45,13 @@ pub struct SessionTelemetry {
 #[derive(Debug, Error)]
 pub enum BudgetError {
     #[error("time budget must be between 5 and 720 minutes")]
-    InvalidTime,
+    Time,
     #[error("cost budget must be between €0.10 and €100.00")]
-    InvalidCost,
+    Cost,
     #[error("idle timeout must be between 1 and 240 minutes")]
-    InvalidIdleTimeout,
+    IdleTimeout,
     #[error("cost rate must be a positive finite number")]
-    InvalidCostRate,
+    CostRate,
 }
 
 pub struct BudgetTracker {
@@ -67,9 +67,9 @@ impl LaunchBudget {
     pub fn validate(self) -> Result<Self, BudgetError> {
         match self {
             Self::Time { minutes } if (5..=720).contains(&minutes) => Ok(self),
-            Self::Time { .. } => Err(BudgetError::InvalidTime),
+            Self::Time { .. } => Err(BudgetError::Time),
             Self::Cost { eur } if eur.is_finite() && (0.1..=100.0).contains(&eur) => Ok(self),
-            Self::Cost { .. } => Err(BudgetError::InvalidCost),
+            Self::Cost { .. } => Err(BudgetError::Cost),
         }
     }
 }
@@ -84,10 +84,10 @@ impl BudgetTracker {
     ) -> Result<Self, BudgetError> {
         let budget = budget.validate()?;
         if !(1..=240).contains(&idle_timeout_minutes) {
-            return Err(BudgetError::InvalidIdleTimeout);
+            return Err(BudgetError::IdleTimeout);
         }
         if !cost_per_hr_eur.is_finite() || cost_per_hr_eur <= 0.0 {
-            return Err(BudgetError::InvalidCostRate);
+            return Err(BudgetError::CostRate);
         }
         let elapsed_ms = now_epoch_ms.saturating_sub(started_at_epoch_ms);
         Ok(Self {
@@ -102,7 +102,7 @@ impl BudgetTracker {
 
     pub fn update_cost_per_hr(&mut self, cost_per_hr_eur: f64) -> Result<(), BudgetError> {
         if !cost_per_hr_eur.is_finite() || cost_per_hr_eur <= 0.0 {
-            return Err(BudgetError::InvalidCostRate);
+            return Err(BudgetError::CostRate);
         }
         self.cost_per_hr_eur = cost_per_hr_eur;
         Ok(())

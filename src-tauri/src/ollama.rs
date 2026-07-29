@@ -126,11 +126,11 @@ impl OllamaClient {
             }
         }
 
-        if !buffer.is_empty() {
-            if let Some(update) = parse_pull_line(&buffer)? {
-                completed |= update.status == "success";
-                let _ = progress.send(update.into());
-            }
+        if !buffer.is_empty()
+            && let Some(update) = parse_pull_line(&buffer)?
+        {
+            completed |= update.status == "success";
+            let _ = progress.send(update.into());
         }
 
         if completed {
