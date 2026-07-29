@@ -69,8 +69,6 @@ pub enum LaunchError {
     PodTimeout,
     #[error("RunPod did not return a cost for the running pod")]
     MissingCost,
-    #[error("RunPod did not return the allocated GPU")]
-    MissingGpu,
 }
 
 pub struct LaunchOrchestrator {
@@ -161,7 +159,7 @@ impl LaunchOrchestrator {
         let pod = self.wait_for_running(&pod_id, &events).await?;
         let gpu_name = pod
             .allocated_gpu()
-            .ok_or(LaunchError::MissingGpu)?
+            .unwrap_or("GPU details unavailable")
             .to_owned();
         let data_center_id = pod
             .data_center_id()

@@ -65,7 +65,7 @@ impl RunpodClient {
     }
 
     pub async fn get_pod(&self, pod_id: &str) -> Result<Pod, RunpodError> {
-        self.send_json(self.get(&format!("/pods/{pod_id}"))).await
+        self.send_json(self.get(&pod_detail_path(pod_id))).await
     }
 
     pub async fn start_pod(&self, pod_id: &str) -> Result<Pod, RunpodError> {
@@ -319,6 +319,10 @@ fn nonempty(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
 }
 
+fn pod_detail_path(pod_id: &str) -> String {
+    format!("/pods/{pod_id}?includeMachine=true&includeNetworkVolume=true")
+}
+
 async fn ensure_success(response: Response) -> Result<Response, RunpodError> {
     let status = response.status();
     if status.is_success() {
@@ -436,5 +440,13 @@ mod tests {
             .unwrap()
             .with_base_url("http://127.0.0.1");
         assert_eq!(client.base_url.as_ref(), "http://127.0.0.1");
+    }
+
+    #[test]
+    fn pod_lookup_requests_allocation_metadata() {
+        assert_eq!(
+            pod_detail_path("pod-1"),
+            "/pods/pod-1?includeMachine=true&includeNetworkVolume=true"
+        );
     }
 }
