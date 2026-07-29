@@ -376,7 +376,12 @@ async fn launch_preset_inner(
                     < TERMINATION_GRACE.as_millis() as u64 =>
         {
             orchestrator
-                .resume(grace.view.session.pod_id, preset.clone(), events_tx)
+                .resume(
+                    grace.view.session.pod_id,
+                    preset.clone(),
+                    region.clone(),
+                    events_tx,
+                )
                 .await
                 .map_err(|error| error.to_string())?
         }

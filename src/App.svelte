@@ -79,6 +79,8 @@
     presetId: string;
     modelLabel: string;
     ollamaTag: string;
+    gpuName: string;
+    dataCenterId: string;
     startedAtEpochMs: number;
     costPerHrUsd: number;
     costPerHrEur: number;
@@ -727,8 +729,8 @@
                       </span>
                       <span class="preset-meta">{preset.sizeGb} GB · {preset.minVramGb} GB VRAM</span>
                     </span>
-                    <span class="preset-cost"
-                      >{formatMoney(preset.estCostPerHr)}<small>/hr</small></span
+                    <span class="preset-cost" title="Estimated hourly compute cost"
+                      >~{formatMoney(preset.estCostPerHr)}<small>/hr</small></span
                     >
                   </button>
                 {/each}
@@ -1140,6 +1142,10 @@
                 <p class="eyebrow live">Session live</p>
                 <h1>{session.modelLabel}</h1>
                 <p class="model-tag">{session.ollamaTag}</p>
+                <p class="allocation-line" title={`${session.gpuName} in ${session.dataCenterId}`}>
+                  <strong>{session.gpuName}</strong>
+                  <span>{session.dataCenterId}</span>
+                </p>
               </div>
               <span class="live-indicator"><span></span>Running</span>
             </div>
@@ -1152,7 +1158,11 @@
               <div class="metric">
                 <span>Accrued</span>
                 <strong>{formatMoney(telemetry?.accruedCostEur ?? 0, 3)}</strong>
-                <small>{formatMoney(telemetry?.costPerHrEur ?? session.costPerHrEur)}/hr</small>
+                <small
+                  >Actual rate · {formatMoney(
+                    telemetry?.costPerHrEur ?? session.costPerHrEur
+                  )}/hr</small
+                >
               </div>
               <div class="metric wide">
                 <span>{budgetMode === "time" ? "Time budget" : "Cost budget"}</span>

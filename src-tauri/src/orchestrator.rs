@@ -52,6 +52,8 @@ pub struct RunningSession {
     pub preset_id: String,
     pub model_label: String,
     pub ollama_tag: String,
+    pub gpu_name: String,
+    pub data_center_id: String,
     pub remote_url: String,
     pub started_at_epoch_ms: u64,
     pub cost_per_hr_usd: f64,
@@ -67,6 +69,8 @@ pub enum LaunchError {
     PodTimeout,
     #[error("RunPod did not return a cost for the running pod")]
     MissingCost,
+    #[error("RunPod did not return the allocated GPU")]
+    MissingGpu,
 }
 
 pub struct LaunchOrchestrator {
@@ -98,9 +102,16 @@ impl LaunchOrchestrator {
         let started_at_epoch_ms = now_epoch_ms();
         let pod = self.runpod.create_pod(&request).await?;
         let pod_id = pod.id.clone();
+        let data_center_id = network_volume.data_center_id;
 
         let result = self
-            .finish_launch(pod_id.clone(), preset, started_at_epoch_ms, events)
+            .finish_launch(
+                pod_id.clone(),
+                preset,
+                data_center_id,
+                started_at_epoch_ms,
+                events,
+            )
             .await;
         if result.is_err() {
             let _ = self.runpod.stop_pod(&pod_id).await;
@@ -113,12 +124,19 @@ impl LaunchOrchestrator {
         &self,
         pod_id: String,
         preset: Preset,
+        data_center_id: String,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
         send_stage(&events, LaunchStage::RequestingPod, "Resuming stopped pod");
         self.runpod.start_pod(&pod_id).await?;
         let result = self
-            .finish_launch(pod_id.clone(), preset, now_epoch_ms(), events)
+            .finish_launch(
+                pod_id.clone(),
+                preset,
+                data_center_id,
+                now_epoch_ms(),
+                events,
+            )
             .await;
         if result.is_err() {
             let _ = self.runpod.stop_pod(&pod_id).await;
@@ -131,6 +149,7 @@ impl LaunchOrchestrator {
         &self,
         pod_id: String,
         preset: Preset,
+        requested_data_center_id: String,
         started_at_epoch_ms: u64,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
@@ -140,14 +159,25 @@ impl LaunchOrchestrator {
             "Waiting for container",
         );
         let pod = self.wait_for_running(&pod_id, &events).await?;
-        let remote_url = format!("https://{pod_id}-11434.proxy.runpod.net");
-        let ollama = OllamaClient::new(&remote_url)?;
-
+        let gpu_name = pod
+            .allocated_gpu()
+            .ok_or(LaunchError::MissingGpu)?
+            .to_owned();
+        let data_center_id = pod
+            .data_center_id()
+            .unwrap_or(&requested_data_center_id)
+            .to_owned();
+        let cost_per_hr_usd = pod
+            .effective_cost_per_hr()
+            .ok_or(LaunchError::MissingCost)?;
         send_stage(
             &events,
             LaunchStage::BootingContainer,
-            "Waiting for Ollama health",
+            format!("{gpu_name} · {data_center_id} · ${cost_per_hr_usd:.2}/hr"),
         );
+        let remote_url = format!("https://{pod_id}-11434.proxy.runpod.net");
+        let ollama = OllamaClient::new(&remote_url)?;
+
         ollama.wait_until_healthy(OLLAMA_HEALTH_ATTEMPTS).await?;
 
         send_stage(
@@ -186,11 +216,11 @@ impl LaunchOrchestrator {
             preset_id: preset.id,
             model_label: preset.label,
             ollama_tag: preset.ollama_tag,
+            gpu_name,
+            data_center_id,
             remote_url,
             started_at_epoch_ms,
-            cost_per_hr_usd: pod
-                .effective_cost_per_hr()
-                .ok_or(LaunchError::MissingCost)?,
+            cost_per_hr_usd,
         })
     }
 

@@ -248,6 +248,10 @@ pub struct Pod {
     pub adjusted_cost_per_hr: Option<f64>,
     #[serde(default)]
     pub network_volume: Option<NetworkVolume>,
+    #[serde(default)]
+    pub gpu: Option<PodGpu>,
+    #[serde(default)]
+    pub machine: Option<PodMachine>,
 }
 
 impl Pod {
@@ -258,6 +262,48 @@ impl Pod {
     pub fn effective_cost_per_hr(&self) -> Option<f64> {
         self.adjusted_cost_per_hr.or(self.cost_per_hr)
     }
+
+    pub fn allocated_gpu(&self) -> Option<&str> {
+        self.gpu
+            .as_ref()
+            .and_then(|gpu| nonempty(&gpu.display_name).or_else(|| nonempty(&gpu.id)))
+            .or_else(|| {
+                self.machine.as_ref().and_then(|machine| {
+                    nonempty(&machine.gpu_display_name).or_else(|| nonempty(&machine.gpu_type_id))
+                })
+            })
+    }
+
+    pub fn data_center_id(&self) -> Option<&str> {
+        self.machine
+            .as_ref()
+            .and_then(|machine| nonempty(&machine.data_center_id))
+            .or_else(|| {
+                self.network_volume
+                    .as_ref()
+                    .and_then(|volume| nonempty(&volume.data_center_id))
+            })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodGpu {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodMachine {
+    #[serde(default)]
+    pub gpu_type_id: String,
+    #[serde(default)]
+    pub gpu_display_name: String,
+    #[serde(default)]
+    pub data_center_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -267,6 +313,10 @@ pub struct NetworkVolume {
     pub name: String,
     pub size: u16,
     pub data_center_id: String,
+}
+
+fn nonempty(value: &str) -> Option<&str> {
+    (!value.trim().is_empty()).then_some(value)
 }
 
 async fn ensure_success(response: Response) -> Result<Response, RunpodError> {
@@ -353,12 +403,23 @@ mod tests {
             "id": "pod-1",
             "desiredStatus": "RUNNING",
             "costPerHr": "0.34",
-            "adjustedCostPerHr": 0.31
+            "adjustedCostPerHr": 0.31,
+            "gpu": {
+                "id": "NVIDIA RTX PRO 4000 Blackwell",
+                "displayName": "RTX PRO 4000"
+            },
+            "machine": {
+                "gpuTypeId": "NVIDIA RTX PRO 4000 Blackwell",
+                "gpuDisplayName": "RTX PRO 4000",
+                "dataCenterId": "EU-RO-1"
+            }
         }))
         .unwrap();
 
         assert!(pod.is_running());
         assert_eq!(pod.effective_cost_per_hr(), Some(0.31));
+        assert_eq!(pod.allocated_gpu(), Some("RTX PRO 4000"));
+        assert_eq!(pod.data_center_id(), Some("EU-RO-1"));
     }
 
     #[test]

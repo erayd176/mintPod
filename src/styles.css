@@ -1121,6 +1121,31 @@ button:disabled {
   font-size: 8.5px;
 }
 
+.allocation-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 275px;
+  margin: 6px 0 0;
+  color: #717780;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.allocation-line strong {
+  overflow: hidden;
+  color: #b9bdb8;
+  font-weight: 560;
+  text-overflow: ellipsis;
+}
+
+.allocation-line span::before {
+  margin-right: 6px;
+  color: #3f444b;
+  content: "·";
+}
+
 .eyebrow.live,
 .live-indicator {
   color: var(--green);
