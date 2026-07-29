@@ -8,9 +8,11 @@
     "NVIDIA GeForce RTX 4080",
     "NVIDIA RTX A5000",
     "NVIDIA GeForce RTX 3090",
-    "NVIDIA GeForce RTX 4090"
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX PRO 4000 Blackwell",
+    "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA A40"
   ],
   "estCostPerHr": 0.3,
   "tags": ["coding", "quality"]
 }
-

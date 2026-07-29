@@ -7,9 +7,11 @@
   "gpuTypeIds": [
     "NVIDIA GeForce RTX 3070",
     "NVIDIA GeForce RTX 3080",
-    "NVIDIA RTX A4000"
+    "NVIDIA RTX A4000",
+    "NVIDIA RTX PRO 4000 Blackwell",
+    "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA A40"
   ],
   "estCostPerHr": 0.18,
   "tags": ["coding", "fast", "cheap"]
 }
-

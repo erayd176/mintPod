@@ -7,9 +7,11 @@
   "gpuTypeIds": [
     "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A5000",
-    "NVIDIA GeForce RTX 3090"
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA RTX PRO 4000 Blackwell",
+    "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA A40"
   ],
   "estCostPerHr": 0.44,
   "tags": ["agentic", "coding", "quality"]
 }
-

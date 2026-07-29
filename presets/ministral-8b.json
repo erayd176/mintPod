@@ -7,9 +7,11 @@
   "gpuTypeIds": [
     "NVIDIA GeForce RTX 4070 Ti",
     "NVIDIA RTX A4000",
-    "NVIDIA GeForce RTX 4080"
+    "NVIDIA GeForce RTX 4080",
+    "NVIDIA RTX PRO 4000 Blackwell",
+    "NVIDIA RTX PRO 4500 Blackwell",
+    "NVIDIA A40"
   ],
   "estCostPerHr": 0.24,
   "tags": ["agentic", "tools", "long-context"]
 }
-
