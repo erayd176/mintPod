@@ -5,18 +5,31 @@ description = "Launch a RunPod model and wire it into local coding agents"
 authors = ["Eray Dogan"]
 license = "MIT"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lib]
 name = "podpilot_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "podpilot"
+path = "src/main.rs"
+required-features = ["desktop-runtime"]
+
+[features]
+default = ["desktop-runtime"]
+desktop-runtime = ["dep:tauri", "tauri/wry"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+keyring = "4.1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2", features = [] }
+serde_json = "1"
+tauri = { version = "2", default-features = false, features = [], optional = true }
+thiserror = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = { version = "0.9", features = ["vendored"] }
