@@ -3,13 +3,24 @@
 #[cfg(feature = "desktop-runtime")]
 mod commands;
 mod credentials;
+mod presets;
 mod runpod;
+mod state;
 
 #[cfg(feature = "desktop-runtime")]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri::Manager;
+
     tauri::Builder::default()
+        .setup(|app| {
+            let config_dir = app.path().app_config_dir()?;
+            std::fs::create_dir_all(&config_dir)?;
+            app.manage(state::AppState::load(config_dir)?);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            commands::list_presets,
             commands::api_key_status,
             commands::save_api_key,
             commands::remove_api_key

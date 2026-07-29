@@ -1,4 +1,16 @@
-use crate::{credentials::CredentialStore, runpod::RunpodClient};
+use tauri::State;
+
+use crate::{
+    credentials::CredentialStore, presets::PresetView, runpod::RunpodClient, state::AppState,
+};
+
+#[tauri::command]
+pub fn list_presets(state: State<'_, AppState>) -> Result<Vec<PresetView>, String> {
+    state
+        .presets()
+        .map(|catalog| catalog.list())
+        .map_err(|_| "preset catalog lock is poisoned".to_owned())
+}
 
 #[tauri::command]
 pub async fn api_key_status() -> Result<bool, String> {

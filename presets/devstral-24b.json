@@ -1,0 +1,15 @@
+{
+  "id": "devstral-24b",
+  "label": "Devstral 24B",
+  "ollamaTag": "devstral:24b",
+  "sizeGb": 14.0,
+  "minVramGb": 24,
+  "gpuTypeIds": [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 3090"
+  ],
+  "estCostPerHr": 0.44,
+  "tags": ["agentic", "coding", "quality"]
+}
+

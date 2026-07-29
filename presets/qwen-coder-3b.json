@@ -1,0 +1,15 @@
+{
+  "id": "qwen-coder-3b",
+  "label": "Qwen2.5-Coder 3B",
+  "ollamaTag": "qwen2.5-coder:3b",
+  "sizeGb": 1.9,
+  "minVramGb": 8,
+  "gpuTypeIds": [
+    "NVIDIA GeForce RTX 3070",
+    "NVIDIA GeForce RTX 3080",
+    "NVIDIA RTX A4000"
+  ],
+  "estCostPerHr": 0.18,
+  "tags": ["coding", "fast", "cheap"]
+}
+

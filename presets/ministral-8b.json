@@ -1,0 +1,15 @@
+{
+  "id": "ministral-8b",
+  "label": "Ministral 3 8B",
+  "ollamaTag": "ministral-3:8b",
+  "sizeGb": 6.0,
+  "minVramGb": 12,
+  "gpuTypeIds": [
+    "NVIDIA GeForce RTX 4070 Ti",
+    "NVIDIA RTX A4000",
+    "NVIDIA GeForce RTX 4080"
+  ],
+  "estCostPerHr": 0.24,
+  "tags": ["agentic", "tools", "long-context"]
+}
+

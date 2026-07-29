@@ -1,0 +1,16 @@
+{
+  "id": "qwen-coder-14b",
+  "label": "Qwen2.5-Coder 14B",
+  "ollamaTag": "qwen2.5-coder:14b",
+  "sizeGb": 9.0,
+  "minVramGb": 16,
+  "gpuTypeIds": [
+    "NVIDIA GeForce RTX 4080",
+    "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA GeForce RTX 4090"
+  ],
+  "estCostPerHr": 0.3,
+  "tags": ["coding", "quality"]
+}
+
