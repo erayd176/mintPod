@@ -8,13 +8,19 @@ use tokio::sync::Mutex;
 use crate::{
     orchestrator::RunningSession,
     presets::{PresetCatalog, PresetError},
+    proxy::LocalProxy,
     settings::{AppSettings, SettingsError, SettingsStore},
 };
+
+pub struct ActiveSession {
+    pub session: RunningSession,
+    pub proxy: LocalProxy,
+}
 
 pub enum RuntimeState {
     Idle,
     Launching,
-    Running(RunningSession),
+    Running(Box<ActiveSession>),
 }
 
 pub struct AppState {
@@ -80,8 +86,9 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn finish_launch(&self, session: RunningSession) {
-        *self.runtime.lock().await = RuntimeState::Running(session);
+    pub async fn finish_launch(&self, session: RunningSession, proxy: LocalProxy) {
+        *self.runtime.lock().await =
+            RuntimeState::Running(Box::new(ActiveSession { session, proxy }));
     }
 
     pub async fn fail_launch(&self) {

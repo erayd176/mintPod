@@ -161,7 +161,6 @@ impl LaunchOrchestrator {
 
         send_stage(&events, LaunchStage::WarmingUp, "Loading model into VRAM");
         ollama.warm_model(&preset.ollama_tag).await?;
-        send_stage(&events, LaunchStage::Ready, "Model ready");
 
         Ok(RunningSession {
             pod_id,

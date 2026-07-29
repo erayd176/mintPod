@@ -4,6 +4,7 @@ use crate::{
     credentials::CredentialStore,
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
     presets::PresetView,
+    proxy::LocalProxy,
     runpod::RunpodClient,
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::AppState,
@@ -75,8 +76,8 @@ pub async fn launch_preset(
 
     let result = launch_preset_inner(&preset_id, &app, &state).await;
     match result {
-        Ok(session) => {
-            state.finish_launch(session.clone()).await;
+        Ok((session, proxy)) => {
+            state.finish_launch(session.clone(), proxy).await;
             Ok(session)
         }
         Err(error) => {
@@ -90,7 +91,7 @@ async fn launch_preset_inner(
     preset_id: &str,
     app: &AppHandle,
     state: &State<'_, AppState>,
-) -> Result<RunningSession, String> {
+) -> Result<(RunningSession, LocalProxy), String> {
     let preset = state
         .presets()
         .map_err(|_| "preset catalog lock is poisoned".to_owned())?
@@ -129,10 +130,30 @@ async fn launch_preset_inner(
             let _ = event_app.emit("launch-progress", event);
         }
     });
-    let result = LaunchOrchestrator::new(runpod)
+    let session = LaunchOrchestrator::new(runpod.clone())
         .launch(preset, volume, events_tx)
         .await
-        .map_err(|error| error.to_string());
+        .map_err(|error| error.to_string())?;
     let _ = forward.await;
-    result
+
+    let proxy = match LocalProxy::start(&session.remote_url).await {
+        Ok(proxy) => proxy,
+        Err(error) => {
+            let _ = runpod.stop_pod(&session.pod_id).await;
+            return Err(error.to_string());
+        }
+    };
+    app.emit(
+        "launch-progress",
+        LaunchEvent {
+            stage: LaunchStage::Ready,
+            detail: "Local endpoint secured".to_owned(),
+            completed_bytes: None,
+            total_bytes: None,
+            skipped: false,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    Ok((session, proxy))
 }

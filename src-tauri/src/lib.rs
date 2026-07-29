@@ -6,6 +6,7 @@ mod credentials;
 mod ollama;
 mod orchestrator;
 mod presets;
+mod proxy;
 mod runpod;
 mod settings;
 mod state;
