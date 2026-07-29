@@ -54,7 +54,7 @@ pub struct RunningSession {
     pub ollama_tag: String,
     pub remote_url: String,
     pub started_at_epoch_ms: u64,
-    pub cost_per_hr: f64,
+    pub cost_per_hr_usd: f64,
 }
 
 #[derive(Debug, Error)]
@@ -104,6 +104,25 @@ impl LaunchOrchestrator {
             .await;
         if result.is_err() {
             let _ = self.runpod.stop_pod(&pod_id).await;
+            let _ = self.runpod.terminate_pod(&pod_id).await;
+        }
+        result
+    }
+
+    pub async fn resume(
+        &self,
+        pod_id: String,
+        preset: Preset,
+        events: UnboundedSender<LaunchEvent>,
+    ) -> Result<RunningSession, LaunchError> {
+        send_stage(&events, LaunchStage::RequestingPod, "Resuming stopped pod");
+        self.runpod.start_pod(&pod_id).await?;
+        let result = self
+            .finish_launch(pod_id.clone(), preset, now_epoch_ms(), events)
+            .await;
+        if result.is_err() {
+            let _ = self.runpod.stop_pod(&pod_id).await;
+            let _ = self.runpod.terminate_pod(&pod_id).await;
         }
         result
     }
@@ -169,7 +188,7 @@ impl LaunchOrchestrator {
             ollama_tag: preset.ollama_tag,
             remote_url,
             started_at_epoch_ms,
-            cost_per_hr: pod
+            cost_per_hr_usd: pod
                 .effective_cost_per_hr()
                 .ok_or(LaunchError::MissingCost)?,
         })

@@ -74,12 +74,41 @@
     modelLabel: string;
     ollamaTag: string;
     startedAtEpochMs: number;
-    costPerHr: number;
+    costPerHrUsd: number;
+    costPerHrEur: number;
+    idleTimeoutMinutes: number;
+    budget:
+      | { kind: "time"; minutes: number }
+      | { kind: "cost"; eur: number };
     wiring: {
       harness: string;
       command: string;
       configPath: string;
     };
+  }
+
+  interface SessionTelemetry {
+    elapsedSeconds: number;
+    accruedCostEur: number;
+    costPerHrEur: number;
+    budgetKind: BudgetMode;
+    budgetRemainingSeconds: number | null;
+    budgetRemainingEur: number | null;
+    idleRemainingSeconds: number;
+  }
+
+  interface SessionStoppedEvent {
+    reason: "manual" | "timeBudget" | "costBudget" | "idleTimeout" | "remoteStopped";
+    historyError: string | null;
+  }
+
+  interface HistoryEntry {
+    presetId: string;
+    modelLabel: string;
+    startedAtEpochMs: number;
+    durationSeconds: number;
+    finalCostEur: number;
+    stopReason: string;
   }
 
   interface StageState {
@@ -112,7 +141,6 @@
   let timeBudgetMinutes = 60;
   let costBudgetEur = 1;
   let session: Session | null = null;
-  let now = Date.now();
   let copied = false;
   let holdingStop = false;
   let stopBusy = false;
@@ -129,38 +157,45 @@
   let customGpuTierId = "balanced";
   let customBusy = false;
   let customWarning = "";
+  let telemetry: SessionTelemetry | null = null;
+  let recentSessions: HistoryEntry[] = [];
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
-  $: elapsedSeconds = session
-    ? Math.max(0, Math.floor((now - session.startedAtEpochMs) / 1000))
-    : 0;
-  $: accruedCost = session ? (elapsedSeconds / 3600) * session.costPerHr : 0;
-  $: budgetRemaining =
-    budgetMode === "time"
-      ? Math.max(0, timeBudgetMinutes * 60 - elapsedSeconds)
-      : Math.max(
-          0,
-          session?.costPerHr
-            ? ((costBudgetEur - accruedCost) / session.costPerHr) * 3600
-            : 0
-        );
   $: selectedGpuTier =
     gpuTiers.find((tier) => tier.id === customGpuTierId) ?? gpuTiers[0] ?? null;
 
   onMount(() => {
-    let unlisten: UnlistenFn | undefined;
-    const clock = window.setInterval(() => (now = Date.now()), 1000);
+    const disposers: UnlistenFn[] = [];
 
     void listen<LaunchEvent>("launch-progress", ({ payload }) => {
       applyLaunchEvent(payload);
     }).then((dispose) => {
-      unlisten = dispose;
+      disposers.push(dispose);
+    });
+    void listen<SessionTelemetry>("session-telemetry", ({ payload }) => {
+      telemetry = payload;
+    }).then((dispose) => {
+      disposers.push(dispose);
+    });
+    void listen<SessionStoppedEvent>("session-stopped", ({ payload }) => {
+      session = null;
+      telemetry = null;
+      screen = "idle";
+      if (payload.historyError) errorMessage = payload.historyError;
+      void refreshHistory();
+      void refreshCache();
+    }).then((dispose) => {
+      disposers.push(dispose);
+    });
+    void listen<string>("session-cleanup-error", ({ payload }) => {
+      errorMessage = payload;
+    }).then((dispose) => {
+      disposers.push(dispose);
     });
     void initialize();
 
     return () => {
-      window.clearInterval(clock);
-      unlisten?.();
+      for (const dispose of disposers) dispose();
       cancelStop();
     };
   });
@@ -177,13 +212,15 @@
 
   async function initialize() {
     try {
-      const [hasKey, availablePresets, currentSettings] = await Promise.all([
+      const [hasKey, availablePresets, currentSettings, history] = await Promise.all([
         invoke<boolean>("api_key_status"),
         invoke<Preset[]>("list_presets"),
-        invoke<Settings>("get_settings")
+        invoke<Settings>("get_settings"),
+        invoke<HistoryEntry[]>("session_history")
       ]);
       presets = availablePresets;
       settings = currentSettings;
+      recentSessions = history;
       selectedId =
         availablePresets.find((preset) => preset.tags.includes("recommended"))?.id ??
         availablePresets[0]?.id ??
@@ -193,6 +230,33 @@
     } catch (error) {
       errorMessage = messageFrom(error);
       screen = "setup";
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      recentSessions = await invoke<HistoryEntry[]>("session_history");
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    }
+  }
+
+  async function updateStorageRegion() {
+    if (!settings) return;
+    try {
+      await invoke("set_storage_region", { region: settings.storageRegion });
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    }
+  }
+
+  async function updateIdleTimeout() {
+    if (!settings) return;
+    try {
+      await invoke("set_idle_timeout", { minutes: settings.idleTimeoutMinutes });
+    } catch (error) {
+      errorMessage = messageFrom(error);
     }
   }
 
@@ -296,9 +360,22 @@
     screen = "launching";
     try {
       session = await invoke<Session>("launch_preset", {
-        presetId: selectedPreset.id
+        presetId: selectedPreset.id,
+        budget:
+          budgetMode === "time"
+            ? { kind: "time", minutes: timeBudgetMinutes }
+            : { kind: "cost", eur: costBudgetEur }
       });
-      now = Date.now();
+      telemetry = {
+        elapsedSeconds: 0,
+        accruedCostEur: 0,
+        costPerHrEur: session.costPerHrEur,
+        budgetKind: budgetMode,
+        budgetRemainingSeconds:
+          budgetMode === "time" ? timeBudgetMinutes * 60 : null,
+        budgetRemainingEur: budgetMode === "cost" ? costBudgetEur : null,
+        idleRemainingSeconds: session.idleTimeoutMinutes * 60
+      };
       screen = "running";
     } catch (error) {
       errorMessage = messageFrom(error);
@@ -360,6 +437,7 @@
     try {
       await invoke("stop_session");
       session = null;
+      telemetry = null;
       screen = "idle";
     } catch (error) {
       errorMessage = messageFrom(error);
@@ -399,6 +477,10 @@
   function formatBytes(bytes: number) {
     if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
     return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  }
+
+  function stopReasonLabel(reason: string) {
+    return reason === "manual" ? "manual" : reason;
   }
 
   function messageFrom(error: unknown) {
@@ -480,8 +562,7 @@
                 <select
                   id="storage-region"
                   bind:value={settings.storageRegion}
-                  onchange={() =>
-                    invoke("set_storage_region", { region: settings?.storageRegion })}
+                  onchange={updateStorageRegion}
                 >
                   {#each settings.verifiedStorageRegions as region}
                     <option value={region}>{region}</option>
@@ -504,29 +585,47 @@
               <span class="status-dot">Idle</span>
             </div>
 
-            <div class="preset-list" role="radiogroup" aria-label="Model preset">
-              {#each presets as preset}
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={selectedId === preset.id}
-                  class:selected={selectedId === preset.id}
-                  class="preset-card"
-                  onclick={() => (selectedId = preset.id)}
-                >
-                  <span class="radio-mark"></span>
-                  <span class="preset-copy">
-                    <span class="preset-title">
-                      {preset.label}
-                      {#if preset.tags.includes("recommended")}
-                        <span class="tag">Default</span>
-                      {/if}
+            <div class="idle-scroll">
+              <div class="preset-list" role="radiogroup" aria-label="Model preset">
+                {#each presets as preset}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedId === preset.id}
+                    class:selected={selectedId === preset.id}
+                    class="preset-card"
+                    onclick={() => (selectedId = preset.id)}
+                  >
+                    <span class="radio-mark"></span>
+                    <span class="preset-copy">
+                      <span class="preset-title">
+                        {preset.label}
+                        {#if preset.tags.includes("recommended")}
+                          <span class="tag">Default</span>
+                        {/if}
+                      </span>
+                      <span class="preset-meta">{preset.sizeGb} GB · {preset.minVramGb} GB VRAM</span>
                     </span>
-                    <span class="preset-meta">{preset.sizeGb} GB · {preset.minVramGb} GB VRAM</span>
-                  </span>
-                  <span class="preset-cost">{formatMoney(preset.estCostPerHr)}<small>/hr</small></span>
-                </button>
-              {/each}
+                    <span class="preset-cost"
+                      >{formatMoney(preset.estCostPerHr)}<small>/hr</small></span
+                    >
+                  </button>
+                {/each}
+              </div>
+              {#if recentSessions.length > 0}
+                <div class="history-block">
+                  <div class="section-label"><span>Recent sessions</span><span>Last 5</span></div>
+                  {#each recentSessions as entry}
+                    <div class="history-row">
+                      <span>
+                        <strong>{entry.modelLabel}</strong>
+                        <small>{formatDuration(entry.durationSeconds)} · {stopReasonLabel(entry.stopReason)}</small>
+                      </span>
+                      <span>{formatMoney(entry.finalCostEur, 3)}</span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             </div>
 
             <div class="launch-controls">
@@ -726,6 +825,37 @@
                   {customBusy ? "Validating preset" : "Add preset"}
                 </button>
               </form>
+
+              {#if settings}
+                <div class="section-label add-label">
+                  <span>Runtime defaults</span>
+                  <span>Local</span>
+                </div>
+                <div class="runtime-settings">
+                  <label>
+                    <span>Storage region</span>
+                    <select bind:value={settings.storageRegion} onchange={updateStorageRegion}>
+                      {#each settings.verifiedStorageRegions as region}
+                        <option value={region}>{region}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Idle timeout</span>
+                    <span class="number-field form-number">
+                      <input
+                        type="number"
+                        min="1"
+                        max="240"
+                        step="1"
+                        bind:value={settings.idleTimeoutMinutes}
+                        onchange={updateIdleTimeout}
+                      />
+                      <span>min</span>
+                    </span>
+                  </label>
+                </div>
+              {/if}
             </div>
           </div>
         {:else if screen === "launching"}
@@ -775,16 +905,20 @@
             <div class="metric-grid">
               <div class="metric">
                 <span>Elapsed</span>
-                <strong>{formatDuration(elapsedSeconds)}</strong>
+                <strong>{formatDuration(telemetry?.elapsedSeconds ?? 0)}</strong>
               </div>
               <div class="metric">
                 <span>Accrued</span>
-                <strong>{formatMoney(accruedCost, 3)}</strong>
-                <small>{formatMoney(session.costPerHr)}/hr</small>
+                <strong>{formatMoney(telemetry?.accruedCostEur ?? 0, 3)}</strong>
+                <small>{formatMoney(telemetry?.costPerHrEur ?? session.costPerHrEur)}/hr</small>
               </div>
               <div class="metric wide">
                 <span>{budgetMode === "time" ? "Time budget" : "Cost budget"}</span>
-                <strong>{formatDuration(budgetRemaining)}</strong>
+                <strong>
+                  {budgetMode === "time"
+                    ? formatDuration(telemetry?.budgetRemainingSeconds ?? timeBudgetMinutes * 60)
+                    : formatMoney(telemetry?.budgetRemainingEur ?? costBudgetEur, 3)}
+                </strong>
                 <small>
                   {budgetMode === "time"
                     ? `${timeBudgetMinutes} min limit`
@@ -793,7 +927,11 @@
               </div>
               <div class="metric wide">
                 <span>Idle auto-stop</span>
-                <strong>{settings?.idleTimeoutMinutes ?? 10}:00</strong>
+                <strong
+                  >{formatDuration(
+                    telemetry?.idleRemainingSeconds ?? (settings?.idleTimeoutMinutes ?? 10) * 60
+                  )}</strong
+                >
                 <small>resets on local API traffic</small>
               </div>
             </div>
