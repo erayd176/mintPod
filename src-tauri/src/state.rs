@@ -26,6 +26,7 @@ pub struct SessionView {
     pub budget: LaunchBudget,
     pub idle_timeout_minutes: u16,
     pub cost_per_hr_eur: f64,
+    pub max_hourly_rate_usd: f64,
 }
 
 pub struct ActiveSession {

@@ -23,6 +23,9 @@
     gpuTypeIds: string[];
     estCostPerHr: number;
     tags: string[];
+    contextLength: number;
+    maxOutputTokens: number;
+    verification: "candidate" | "manuallyTested";
     userDefined: boolean;
   }
 
@@ -84,6 +87,8 @@
     startedAtEpochMs: number;
     costPerHrUsd: number;
     costPerHrEur: number;
+    contextLength: number;
+    maxHourlyRateUsd: number;
     idleTimeoutMinutes: number;
     budget:
       | { kind: "time"; minutes: number }
@@ -156,6 +161,7 @@
   let budgetMode: BudgetMode = "time";
   let timeBudgetMinutes = 60;
   let costBudgetEur = 1;
+  let maxHourlyRateUsd = 0.75;
   let session: Session | null = null;
   let copied = false;
   let holdingStop = false;
@@ -243,6 +249,8 @@
         availablePresets.find((preset) => preset.tags.includes("recommended"))?.id ??
         availablePresets[0]?.id ??
         "";
+      const selected = availablePresets.find((preset) => preset.id === selectedId);
+      if (selected) maxHourlyRateUsd = recommendedMaxRate(selected);
       screen = keyProfiles.length ? "idle" : "setup";
       if (keyProfiles.length) void refreshCache();
     } catch (error) {
@@ -474,6 +482,7 @@
     try {
       session = await invoke<Session>("launch_preset", {
         presetId: selectedPreset.id,
+        maxHourlyRateUsd,
         budget:
           budgetMode === "time"
             ? { kind: "time", minutes: timeBudgetMinutes }
@@ -496,6 +505,15 @@
     } finally {
       launchBusy = false;
     }
+  }
+
+  function selectPreset(preset: Preset) {
+    selectedId = preset.id;
+    maxHourlyRateUsd = recommendedMaxRate(preset);
+  }
+
+  function recommendedMaxRate(preset: Preset) {
+    return Math.min(10, Math.max(0.25, Math.ceil(preset.estCostPerHr * 1.5 * 20) / 20));
   }
 
   function applyLaunchEvent(event: LaunchEvent) {
@@ -717,7 +735,7 @@
                     aria-checked={selectedId === preset.id}
                     class:selected={selectedId === preset.id}
                     class="preset-card"
-                    onclick={() => (selectedId = preset.id)}
+                    onclick={() => selectPreset(preset)}
                   >
                     <span class="radio-mark"></span>
                     <span class="preset-copy">
@@ -727,7 +745,11 @@
                           <span class="tag">Default</span>
                         {/if}
                       </span>
-                      <span class="preset-meta">{preset.sizeGb} GB · {preset.minVramGb} GB VRAM</span>
+                      <span class="preset-meta"
+                        >{preset.sizeGb} GB · {preset.minVramGb} GB VRAM · {Math.round(
+                          preset.contextLength / 1024
+                        )}K ctx</span
+                      >
                     </span>
                     <span class="preset-cost" title="Estimated hourly compute cost"
                       >~{formatMoney(preset.estCostPerHr)}<small>/hr</small></span
@@ -791,6 +813,22 @@
                     />
                   </div>
                 {/if}
+              </div>
+              <div class="budget-row">
+                <span class="field-label">Max GPU rate</span>
+                <span class="rate-note">Actual allocation is rejected above this</span>
+                <div class="number-field money">
+                  <span>$</span>
+                  <input
+                    aria-label="Maximum GPU rate in US dollars per hour"
+                    type="number"
+                    min="0.05"
+                    max="10"
+                    step="0.05"
+                    bind:value={maxHourlyRateUsd}
+                  />
+                  <span>/hr</span>
+                </div>
               </div>
               {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
               <div class="account-row">

@@ -1,0 +1,18 @@
+{
+  "id": "gpt-oss-20b",
+  "label": "gpt-oss 20B",
+  "ollamaTag": "gpt-oss:20b",
+  "sizeGb": 14.0,
+  "minVramGb": 24,
+  "gpuTypeIds": [
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA A40"
+  ],
+  "estCostPerHr": 0.44,
+  "tags": ["agentic", "coding", "reasoning", "recommended", "tools"],
+  "contextLength": 65536,
+  "maxOutputTokens": 16384,
+  "verification": "candidate"
+}

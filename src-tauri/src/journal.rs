@@ -34,6 +34,8 @@ pub struct SessionJournal {
     pub data_center_id: String,
     pub budget: LaunchBudget,
     pub idle_timeout_minutes: u16,
+    #[serde(default = "default_max_hourly_rate")]
+    pub max_hourly_rate_usd: f64,
     pub created_at_epoch_ms: u64,
     pub stage: JournalStage,
     pub volume_id: Option<String>,
@@ -48,6 +50,7 @@ pub struct NewSessionJournal {
     pub data_center_id: String,
     pub budget: LaunchBudget,
     pub idle_timeout_minutes: u16,
+    pub max_hourly_rate_usd: f64,
     pub created_at_epoch_ms: u64,
 }
 
@@ -85,6 +88,7 @@ impl SessionJournalStore {
             data_center_id: new_session.data_center_id,
             budget: new_session.budget,
             idle_timeout_minutes: new_session.idle_timeout_minutes,
+            max_hourly_rate_usd: new_session.max_hourly_rate_usd,
             created_at_epoch_ms: new_session.created_at_epoch_ms,
             stage: JournalStage::Prepared,
             volume_id: None,
@@ -232,6 +236,14 @@ fn validate(path: &Path, journal: &SessionJournal) -> Result<(), JournalError> {
             message: "idle timeout must be between 1 and 240 minutes".to_owned(),
         });
     }
+    if !journal.max_hourly_rate_usd.is_finite()
+        || !(0.05..=10.0).contains(&journal.max_hourly_rate_usd)
+    {
+        return Err(JournalError::Invalid {
+            path: path.to_owned(),
+            message: "maximum hourly rate must be between $0.05 and $10.00".to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -253,6 +265,10 @@ fn valid_hex_id(value: &str, length: usize) -> bool {
 
 fn short_id(value: &str, length: usize) -> &str {
     &value[..value.len().min(length)]
+}
+
+fn default_max_hourly_rate() -> f64 {
+    1.0
 }
 
 #[cfg(unix)]
@@ -293,6 +309,7 @@ mod tests {
                 data_center_id: "EU-RO-1".to_owned(),
                 budget: LaunchBudget::Time { minutes: 30 },
                 idle_timeout_minutes: 10,
+                max_hourly_rate_usd: 1.0,
                 created_at_epoch_ms: 42,
             },
         )

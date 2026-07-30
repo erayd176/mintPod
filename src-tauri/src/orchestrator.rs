@@ -58,6 +58,7 @@ pub struct RunningSession {
     pub remote_url: String,
     pub started_at_epoch_ms: u64,
     pub cost_per_hr_usd: f64,
+    pub context_length: u32,
     #[serde(skip_serializing)]
     pub remote_token: String,
 }
@@ -72,6 +73,8 @@ pub enum LaunchError {
     PodTimeout,
     #[error("RunPod did not return a cost for the running pod")]
     MissingCost,
+    #[error("allocated GPU rate ${actual:.2}/hr exceeds the accepted ${maximum:.2}/hr")]
+    RateExceeded { actual: f64, maximum: f64 },
     #[error("launch cancelled")]
     Cancelled,
     #[error("could not persist pod ownership: {0}")]
@@ -88,6 +91,7 @@ pub struct LaunchSpec {
     pub network_volume: crate::runpod::NetworkVolume,
     pub remote_token: String,
     pub context_length: u32,
+    pub max_hourly_rate_usd: f64,
     pub cancellation: CancellationToken,
 }
 
@@ -97,6 +101,7 @@ struct PendingSession {
     requested_data_center_id: String,
     started_at_epoch_ms: u64,
     remote_token: String,
+    max_hourly_rate_usd: f64,
     cancellation: CancellationToken,
 }
 
@@ -150,6 +155,7 @@ impl LaunchOrchestrator {
                 requested_data_center_id: data_center_id,
                 started_at_epoch_ms,
                 remote_token: spec.remote_token,
+                max_hourly_rate_usd: spec.max_hourly_rate_usd,
                 cancellation: spec.cancellation,
             },
             events,
@@ -168,6 +174,7 @@ impl LaunchOrchestrator {
             requested_data_center_id,
             started_at_epoch_ms,
             remote_token,
+            max_hourly_rate_usd,
             cancellation,
         } = pending;
         send_stage(
@@ -189,6 +196,12 @@ impl LaunchOrchestrator {
         let cost_per_hr_usd = pod
             .effective_cost_per_hr()
             .ok_or(LaunchError::MissingCost)?;
+        if cost_per_hr_usd > max_hourly_rate_usd {
+            return Err(LaunchError::RateExceeded {
+                actual: cost_per_hr_usd,
+                maximum: max_hourly_rate_usd,
+            });
+        }
         send_stage(
             &events,
             LaunchStage::BootingContainer,
@@ -238,8 +251,11 @@ impl LaunchOrchestrator {
         send_stage(&events, LaunchStage::WarmingUp, "Loading model into VRAM");
         tokio::select! {
             _ = cancellation.cancelled() => return Err(LaunchError::Cancelled),
-            result = ollama.warm_model(&preset.ollama_tag) => result?,
+            result = ollama.warm_model(&preset.ollama_tag, preset.context_length) => result?,
         }
+        ollama
+            .verify_loaded_context(&preset.ollama_tag, preset.context_length)
+            .await?;
 
         Ok(RunningSession {
             pod_id,
@@ -251,6 +267,7 @@ impl LaunchOrchestrator {
             remote_url,
             started_at_epoch_ms,
             cost_per_hr_usd,
+            context_length: preset.context_length,
             remote_token,
         })
     }

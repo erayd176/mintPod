@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -13,7 +16,7 @@ use crate::{
     ollama::OllamaClient,
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchSpec, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
-    runpod::{Pod, RunpodClient, RunpodError, model_volume_preset_id},
+    runpod::{GpuInventory, Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, SessionView},
 };
@@ -79,6 +82,29 @@ pub struct RecoveryView {
     last_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuCandidateView {
+    id: String,
+    display_name: String,
+    memory_in_gb: u16,
+    stock_status: String,
+    hourly_rate_usd: Option<f64>,
+    eligible: bool,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuPreflightView {
+    preset_id: String,
+    data_center_id: String,
+    max_hourly_rate_usd: f64,
+    region_scoped_inventory: bool,
+    candidates: Vec<GpuCandidateView>,
+    usable_gpu_type_ids: Vec<String>,
+}
+
 #[tauri::command]
 pub fn list_presets(state: State<'_, AppState>) -> Result<Vec<PresetView>, String> {
     state
@@ -90,6 +116,34 @@ pub fn list_presets(state: State<'_, AppState>) -> Result<Vec<PresetView>, Strin
 #[tauri::command]
 pub fn list_gpu_tiers() -> Vec<GpuTierView> {
     GPU_TIERS.to_vec()
+}
+
+#[tauri::command]
+pub async fn preflight_preset(
+    preset_id: String,
+    max_hourly_rate_usd: f64,
+    state: State<'_, AppState>,
+) -> Result<GpuPreflightView, String> {
+    validate_max_hourly_rate(max_hourly_rate_usd)?;
+    state
+        .require_idle()
+        .await
+        .map_err(|error| error.to_string())?;
+    let preset = state
+        .presets()
+        .map_err(|_| "preset catalog lock is poisoned".to_owned())?
+        .find(&preset_id)
+        .ok_or_else(|| format!("unknown preset: {preset_id}"))?;
+    let data_center_id = state
+        .settings()
+        .map_err(|_| "settings lock is poisoned".to_owned())?
+        .storage_region
+        .clone();
+    let api_key = CredentialStore::read_active_key(&state.credential_index_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
+    let runpod = RunpodClient::new(api_key).map_err(|error| error.to_string())?;
+    build_gpu_preflight(&runpod, &preset, data_center_id, max_hourly_rate_usd).await
 }
 
 #[tauri::command]
@@ -118,6 +172,9 @@ pub async fn add_custom_preset(
         gpu_type_ids: input.gpu_type_ids,
         est_cost_per_hr: estimated_cost,
         tags: vec!["coding".to_owned(), "custom".to_owned()],
+        context_length: DEFAULT_CONTEXT_LENGTH,
+        max_output_tokens: 16_384,
+        verification: crate::presets::VerificationStatus::Candidate,
     };
     let mut catalog = state
         .presets_mut()
@@ -312,14 +369,107 @@ async fn validated_api_key(api_key: &str) -> Result<String, String> {
     Ok(api_key.to_owned())
 }
 
+async fn build_gpu_preflight(
+    runpod: &RunpodClient,
+    preset: &Preset,
+    data_center_id: String,
+    max_hourly_rate_usd: f64,
+) -> Result<GpuPreflightView, String> {
+    let inventory = runpod
+        .gpu_inventory()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|gpu| (gpu.id.clone(), gpu))
+        .collect::<HashMap<_, _>>();
+    let candidates = preset
+        .gpu_type_ids
+        .iter()
+        .map(|id| gpu_candidate(id, preset.min_vram_gb, max_hourly_rate_usd, &inventory))
+        .collect::<Vec<_>>();
+    let usable_gpu_type_ids = candidates
+        .iter()
+        .filter(|candidate| candidate.eligible)
+        .map(|candidate| candidate.id.clone())
+        .collect();
+    Ok(GpuPreflightView {
+        preset_id: preset.id.clone(),
+        data_center_id,
+        max_hourly_rate_usd,
+        region_scoped_inventory: false,
+        candidates,
+        usable_gpu_type_ids,
+    })
+}
+
+fn gpu_candidate(
+    id: &str,
+    min_vram_gb: u16,
+    max_hourly_rate_usd: f64,
+    inventory: &HashMap<String, GpuInventory>,
+) -> GpuCandidateView {
+    let Some(gpu) = inventory.get(id) else {
+        return GpuCandidateView {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            memory_in_gb: 0,
+            stock_status: "Unknown".to_owned(),
+            hourly_rate_usd: None,
+            eligible: false,
+            reason: Some("not returned by RunPod inventory".to_owned()),
+        };
+    };
+    let price = gpu
+        .lowest_price
+        .as_ref()
+        .map(|lowest| lowest.uninterruptable_price);
+    let reason = if !gpu.secure_cloud {
+        Some("not offered on Secure Cloud".to_owned())
+    } else if gpu.memory_in_gb < min_vram_gb {
+        Some(format!(
+            "{} GB VRAM is below the required {min_vram_gb} GB",
+            gpu.memory_in_gb
+        ))
+    } else if gpu.lowest_price.is_none() {
+        Some("no live Secure Cloud price".to_owned())
+    } else if gpu.lowest_price.as_ref().is_some_and(|lowest| {
+        lowest.stock_status.eq_ignore_ascii_case("none")
+            || !lowest.available_gpu_counts.contains(&1)
+    }) {
+        Some("no single-GPU capacity is currently reported".to_owned())
+    } else if price.is_some_and(|price| price > max_hourly_rate_usd) {
+        Some(format!(
+            "live ${:.2}/hr price exceeds the accepted ${max_hourly_rate_usd:.2}/hr",
+            price.unwrap_or_default()
+        ))
+    } else {
+        None
+    };
+    GpuCandidateView {
+        id: gpu.id.clone(),
+        display_name: gpu.display_name.clone(),
+        memory_in_gb: gpu.memory_in_gb,
+        stock_status: gpu
+            .lowest_price
+            .as_ref()
+            .map(|lowest| lowest.stock_status.clone())
+            .unwrap_or_else(|| "None".to_owned()),
+        hourly_rate_usd: price,
+        eligible: reason.is_none(),
+        reason,
+    }
+}
+
 #[tauri::command]
 pub async fn launch_preset(
     preset_id: String,
     budget: LaunchBudget,
+    max_hourly_rate_usd: f64,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SessionView, String> {
     let budget = budget.validate().map_err(|error| error.to_string())?;
+    validate_max_hourly_rate(max_hourly_rate_usd)?;
     let cancellation = state
         .begin_launch()
         .await
@@ -332,6 +482,7 @@ pub async fn launch_preset(
         &preset_id,
         budget,
         idle_timeout_minutes,
+        max_hourly_rate_usd,
         cancellation,
         &app,
         &state,
@@ -346,6 +497,7 @@ pub async fn launch_preset(
                 budget,
                 idle_timeout_minutes,
                 cost_per_hr_eur,
+                max_hourly_rate_usd,
             };
             let view = state.finish_launch(view, runpod.clone()).await;
             spawn_session_monitor(app, view.clone(), runpod, usd_to_eur);
@@ -367,11 +519,12 @@ async fn launch_preset_inner(
     preset_id: &str,
     budget: LaunchBudget,
     idle_timeout_minutes: u16,
+    max_hourly_rate_usd: f64,
     cancellation: tokio_util::sync::CancellationToken,
     app: &AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<(RunningSession, WiringReceipt, RunpodClient, f64), String> {
-    let preset = state
+    let mut preset = state
         .presets()
         .map_err(|_| "preset catalog lock is poisoned".to_owned())?
         .find(preset_id)
@@ -385,6 +538,30 @@ async fn launch_preset_inner(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
     let runpod = RunpodClient::new(api_key).map_err(|error| error.to_string())?;
+    emit_stage(
+        app,
+        LaunchStage::RequestingPod,
+        "Checking live GPU price and capacity",
+    )?;
+    let preflight =
+        build_gpu_preflight(&runpod, &preset, region.clone(), max_hourly_rate_usd).await?;
+    if preflight.usable_gpu_type_ids.is_empty() {
+        let reasons = preflight
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                candidate
+                    .reason
+                    .as_ref()
+                    .map(|reason| format!("{}: {reason}", candidate.display_name))
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(format!(
+            "no acceptable GPU is currently available; {reasons}"
+        ));
+    }
+    preset.gpu_type_ids = preflight.usable_gpu_type_ids;
     let mut journal = SessionJournalStore::prepare(
         &state.session_journal_path,
         &state.install_id,
@@ -394,6 +571,7 @@ async fn launch_preset_inner(
             data_center_id: region.clone(),
             budget,
             idle_timeout_minutes,
+            max_hourly_rate_usd,
             created_at_epoch_ms: now_epoch_ms(),
         },
     )
@@ -443,7 +621,8 @@ async fn launch_preset_inner(
                 preset: preset.clone(),
                 network_volume: volume,
                 remote_token: runtime_token,
-                context_length: DEFAULT_CONTEXT_LENGTH,
+                context_length: preset.context_length,
+                max_hourly_rate_usd,
                 cancellation,
             },
             |pod, pod_created_at_epoch_ms| {
@@ -667,6 +846,10 @@ async fn recover_session_inner(
     {
         return Err("the recovered runtime is healthy but the model is not ready".to_owned());
     }
+    ollama
+        .verify_loaded_context(&preset.ollama_tag, preset.context_length)
+        .await
+        .map_err(|error| error.to_string())?;
     state
         .gateway
         .connect(&remote_url, &remote_token)
@@ -682,6 +865,12 @@ async fn recover_session_inner(
     let cost_per_hr_usd = pod
         .effective_cost_per_hr()
         .ok_or_else(|| "RunPod did not return a cost for the recovered pod".to_owned())?;
+    if cost_per_hr_usd > journal.max_hourly_rate_usd {
+        return Err(format!(
+            "recovered GPU rate ${cost_per_hr_usd:.2}/hr exceeds the accepted ${:.2}/hr",
+            journal.max_hourly_rate_usd
+        ));
+    }
     let usd_to_eur = fx::usd_to_eur(&state.fx_rate_path).await;
     let gpu_name = pod
         .allocated_gpu()
@@ -703,6 +892,7 @@ async fn recover_session_inner(
             .pod_created_at_epoch_ms
             .unwrap_or(journal.created_at_epoch_ms),
         cost_per_hr_usd,
+        context_length: preset.context_length,
         remote_token,
     };
     journal.stage = JournalStage::Ready;
@@ -716,10 +906,19 @@ async fn recover_session_inner(
             wiring,
             budget: journal.budget,
             idle_timeout_minutes: journal.idle_timeout_minutes,
+            max_hourly_rate_usd: journal.max_hourly_rate_usd,
         },
         runpod,
         usd_to_eur,
     ))
+}
+
+fn validate_max_hourly_rate(rate: f64) -> Result<(), String> {
+    if rate.is_finite() && (0.05..=10.0).contains(&rate) {
+        Ok(())
+    } else {
+        Err("maximum hourly rate must be between $0.05 and $10.00".to_owned())
+    }
 }
 
 #[tauri::command]
@@ -973,5 +1172,63 @@ pub(crate) async fn shutdown_for_exit(app: AppHandle) -> bool {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runpod::{GpuInventory, GpuLowestPrice};
+
+    #[test]
+    fn preflight_rejects_out_of_budget_and_unavailable_gpus() {
+        let inventory = HashMap::from([
+            (
+                "available".to_owned(),
+                GpuInventory {
+                    id: "available".to_owned(),
+                    display_name: "Available GPU".to_owned(),
+                    memory_in_gb: 24,
+                    secure_cloud: true,
+                    lowest_price: Some(GpuLowestPrice {
+                        stock_status: "High".to_owned(),
+                        uninterruptable_price: 0.45,
+                        available_gpu_counts: vec![1],
+                    }),
+                },
+            ),
+            (
+                "expensive".to_owned(),
+                GpuInventory {
+                    id: "expensive".to_owned(),
+                    display_name: "Expensive GPU".to_owned(),
+                    memory_in_gb: 48,
+                    secure_cloud: true,
+                    lowest_price: Some(GpuLowestPrice {
+                        stock_status: "High".to_owned(),
+                        uninterruptable_price: 1.25,
+                        available_gpu_counts: vec![1],
+                    }),
+                },
+            ),
+            (
+                "empty".to_owned(),
+                GpuInventory {
+                    id: "empty".to_owned(),
+                    display_name: "Empty GPU".to_owned(),
+                    memory_in_gb: 48,
+                    secure_cloud: true,
+                    lowest_price: Some(GpuLowestPrice {
+                        stock_status: "None".to_owned(),
+                        uninterruptable_price: 0.25,
+                        available_gpu_counts: Vec::new(),
+                    }),
+                },
+            ),
+        ]);
+
+        assert!(gpu_candidate("available", 24, 0.75, &inventory).eligible);
+        assert!(!gpu_candidate("expensive", 24, 0.75, &inventory).eligible);
+        assert!(!gpu_candidate("empty", 24, 0.75, &inventory).eligible);
     }
 }

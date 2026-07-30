@@ -68,7 +68,20 @@
         "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
         "maxLength": 32
       }
+    },
+    "contextLength": {
+      "type": "integer",
+      "minimum": 64000,
+      "maximum": 1048576
+    },
+    "maxOutputTokens": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 131072
+    },
+    "verification": {
+      "type": "string",
+      "enum": ["candidate", "manuallyTested"]
     }
   }
 }
-

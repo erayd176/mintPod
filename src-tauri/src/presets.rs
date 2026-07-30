@@ -13,24 +13,16 @@ use thiserror::Error;
 const SCHEMA: &str = include_str!("../../presets/schema.json");
 const CURATED: &[(&str, &str)] = &[
     (
-        "qwen-coder-3b.json",
-        include_str!("../../presets/qwen-coder-3b.json"),
+        "gpt-oss-20b.json",
+        include_str!("../../presets/gpt-oss-20b.json"),
     ),
     (
-        "qwen-coder-7b.json",
-        include_str!("../../presets/qwen-coder-7b.json"),
+        "qwen3-coder-30b.json",
+        include_str!("../../presets/qwen3-coder-30b.json"),
     ),
     (
-        "ministral-8b.json",
-        include_str!("../../presets/ministral-8b.json"),
-    ),
-    (
-        "qwen-coder-14b.json",
-        include_str!("../../presets/qwen-coder-14b.json"),
-    ),
-    (
-        "devstral-24b.json",
-        include_str!("../../presets/devstral-24b.json"),
+        "devstral-small-2-24b.json",
+        include_str!("../../presets/devstral-small-2-24b.json"),
     ),
 ];
 
@@ -45,6 +37,20 @@ pub struct Preset {
     pub gpu_type_ids: Vec<String>,
     pub est_cost_per_hr: f64,
     pub tags: Vec<String>,
+    #[serde(default = "default_context_length")]
+    pub context_length: u32,
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: u32,
+    #[serde(default)]
+    pub verification: VerificationStatus,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationStatus {
+    #[default]
+    Candidate,
+    ManuallyTested,
 }
 
 impl Preset {
@@ -158,10 +164,17 @@ impl PresetCatalog {
         let mut entries = Vec::with_capacity(CURATED.len());
         for (name, contents) in CURATED {
             let preset = parse_preset(name, contents, &validator)?;
-            if preset.size_gb > 16.0 {
+            if preset.size_gb > 20.0 {
                 return Err(PresetError::InvalidField {
                     source_name: (*name).to_owned(),
-                    message: "curated presets must not exceed 16 GB".to_owned(),
+                    message: "curated presets must not exceed 20 GB".to_owned(),
+                });
+            }
+            if preset.context_length < 64_000 {
+                return Err(PresetError::InvalidField {
+                    source_name: (*name).to_owned(),
+                    message: "curated coding presets must allocate at least 64000 context tokens"
+                        .to_owned(),
                 });
             }
             entries.push(PresetView {
@@ -272,6 +285,14 @@ impl PresetCatalog {
     }
 }
 
+fn default_context_length() -> u32 {
+    65_536
+}
+
+fn default_max_output_tokens() -> u32 {
+    16_384
+}
+
 pub fn verified_gpu_tier(gpu_type_ids: &[String]) -> Option<&'static GpuTierView> {
     GPU_TIERS.iter().find(|tier| {
         tier.gpu_type_ids
@@ -363,22 +384,28 @@ mod tests {
     fn curated_presets_satisfy_the_shipped_schema() {
         let catalog = PresetCatalog::load(&missing_user_file()).unwrap();
 
-        assert_eq!(catalog.list().len(), 5);
+        assert_eq!(catalog.list().len(), 3);
         assert!(catalog.list().iter().all(|entry| !entry.user_defined));
         assert!(
             catalog
                 .list()
                 .iter()
-                .all(|entry| entry.preset.size_gb <= 16.0)
+                .all(|entry| entry.preset.size_gb <= 20.0)
+        );
+        assert!(
+            catalog
+                .list()
+                .iter()
+                .all(|entry| entry.preset.context_length >= 64_000)
         );
     }
 
     #[test]
     fn model_volume_includes_headroom() {
         let catalog = PresetCatalog::load(&missing_user_file()).unwrap();
-        let preset = catalog.find("qwen-coder-14b").unwrap();
+        let preset = catalog.find("qwen3-coder-30b").unwrap();
 
-        assert_eq!(preset.volume_size_gb(), 14);
+        assert_eq!(preset.volume_size_gb(), 26);
     }
 
     #[test]
@@ -441,6 +468,9 @@ mod tests {
                 .collect(),
             est_cost_per_hr: GPU_TIERS[0].est_cost_per_hr,
             tags: vec!["coding".to_owned(), "custom".to_owned()],
+            context_length: default_context_length(),
+            max_output_tokens: default_max_output_tokens(),
+            verification: VerificationStatus::Candidate,
         };
 
         let first = catalog.add_user_preset(&user_file, custom.clone()).unwrap();

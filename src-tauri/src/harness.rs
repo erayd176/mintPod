@@ -203,7 +203,9 @@ fn merge_current_pi_config(
         "models".to_owned(),
         json!([{
             "id": connection.preset.ollama_tag,
-            "name": connection.preset.label
+            "name": connection.preset.label,
+            "contextWindow": connection.preset.context_length,
+            "maxTokens": connection.preset.max_output_tokens
         }]),
     );
     Ok(())
@@ -320,6 +322,9 @@ mod tests {
             gpu_type_ids: vec!["NVIDIA GeForce RTX 4090".to_owned()],
             est_cost_per_hr: 0.3,
             tags: vec!["coding".to_owned()],
+            context_length: 65_536,
+            max_output_tokens: 16_384,
+            verification: crate::presets::VerificationStatus::Candidate,
         }
     }
 

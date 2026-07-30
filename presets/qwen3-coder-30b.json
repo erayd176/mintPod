@@ -1,0 +1,18 @@
+{
+  "id": "qwen3-coder-30b",
+  "label": "Qwen3-Coder 30B",
+  "ollamaTag": "qwen3-coder:30b",
+  "sizeGb": 19.0,
+  "minVramGb": 48,
+  "gpuTypeIds": [
+    "NVIDIA A40",
+    "NVIDIA RTX A6000",
+    "NVIDIA L40S",
+    "NVIDIA RTX 6000 Ada Generation"
+  ],
+  "estCostPerHr": 0.55,
+  "tags": ["agentic", "coding", "long-context", "tools"],
+  "contextLength": 65536,
+  "maxOutputTokens": 16384,
+  "verification": "candidate"
+}

@@ -1,0 +1,18 @@
+{
+  "id": "devstral-small-2-24b",
+  "label": "Devstral Small 2 24B",
+  "ollamaTag": "devstral-small-2:24b",
+  "sizeGb": 15.0,
+  "minVramGb": 48,
+  "gpuTypeIds": [
+    "NVIDIA A40",
+    "NVIDIA RTX A6000",
+    "NVIDIA L40S",
+    "NVIDIA RTX 6000 Ada Generation"
+  ],
+  "estCostPerHr": 0.55,
+  "tags": ["agentic", "coding", "long-context", "tools", "vision"],
+  "contextLength": 65536,
+  "maxOutputTokens": 16384,
+  "verification": "candidate"
+}

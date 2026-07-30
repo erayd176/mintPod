@@ -16,6 +16,8 @@ pub enum OllamaError {
     InvalidProgress(String),
     #[error("Ollama did not become reachable in time")]
     HealthTimeout,
+    #[error("Ollama allocated {actual} context tokens; {expected} were required")]
+    ContextMismatch { expected: u32, actual: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -147,7 +149,7 @@ impl OllamaClient {
         }
     }
 
-    pub async fn warm_model(&self, model: &str) -> Result<(), OllamaError> {
+    pub async fn warm_model(&self, model: &str, context_length: u32) -> Result<(), OllamaError> {
         let response = self
             .http
             .post(format!("{}/api/generate", self.base_url))
@@ -155,11 +157,41 @@ impl OllamaClient {
             .json(&serde_json::json!({
                 "model": model,
                 "keep_alive": -1,
-                "stream": false
+                "stream": false,
+                "options": {
+                    "num_ctx": context_length
+                }
             }))
             .send()
             .await?;
         ensure_success(response).await.map(|_| ())
+    }
+
+    pub async fn verify_loaded_context(
+        &self,
+        model: &str,
+        expected: u32,
+    ) -> Result<(), OllamaError> {
+        let response = self
+            .http
+            .get(format!("{}/api/ps", self.base_url))
+            .bearer_auth(&self.token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await?;
+        let response = ensure_success(response).await?;
+        let running: RunningModels = response.json().await?;
+        let actual = running
+            .models
+            .iter()
+            .find(|entry| entry.name == model || entry.model == model)
+            .map(|entry| entry.context_length)
+            .unwrap_or(0);
+        if actual == expected {
+            Ok(())
+        } else {
+            Err(OllamaError::ContextMismatch { expected, actual })
+        }
     }
 }
 
@@ -170,7 +202,7 @@ fn is_resumable_pull_error(error: &OllamaError) -> bool {
         OllamaError::InvalidProgress(message) => {
             message == "stream ended before Ollama reported success"
         }
-        OllamaError::HealthTimeout => false,
+        OllamaError::HealthTimeout | OllamaError::ContextMismatch { .. } => false,
     }
 }
 
@@ -183,6 +215,22 @@ struct TagsResponse {
 #[derive(Debug, Deserialize)]
 struct TagEntry {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunningModels {
+    #[serde(default)]
+    models: Vec<RunningModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunningModel {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    context_length: u32,
 }
 
 #[derive(Debug, Deserialize)]

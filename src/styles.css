@@ -881,9 +881,18 @@ button:disabled {
 
 .budget-row {
   display: grid;
-  grid-template-columns: auto 1fr 74px;
+  grid-template-columns: auto 1fr 90px;
   align-items: center;
   gap: 8px;
+}
+
+.rate-note {
+  overflow: hidden;
+  color: #60666e;
+  font-size: 8px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .segmented {

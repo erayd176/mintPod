@@ -6,6 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub const RUNPOD_BASE_URL: &str = "https://rest.runpod.io/v1";
+pub const RUNPOD_GRAPHQL_URL: &str = "https://api.runpod.io/graphql";
 pub const MINTPOD_RUNTIME_IMAGE: &str = "ghcr.io/erayd176/mintpod-runtime:0.1.0";
 const MODEL_VOLUME_PREFIX: &str = "mintpod-";
 const LEGACY_MODEL_VOLUME_PREFIX: &str = "podpilot-";
@@ -33,6 +34,7 @@ pub struct RunpodClient {
     http: Client,
     api_key: Arc<str>,
     base_url: Arc<str>,
+    graphql_url: Arc<str>,
 }
 
 impl RunpodClient {
@@ -52,6 +54,7 @@ impl RunpodClient {
             http,
             api_key: Arc::from(api_key),
             base_url: Arc::from(RUNPOD_BASE_URL),
+            graphql_url: Arc::from(RUNPOD_GRAPHQL_URL),
         })
     }
 
@@ -67,6 +70,51 @@ impl RunpodClient {
 
     pub async fn list_pods(&self) -> Result<Vec<Pod>, RunpodError> {
         self.send_json(self.get("/pods")).await
+    }
+
+    pub async fn gpu_inventory(&self) -> Result<Vec<GpuInventory>, RunpodError> {
+        const QUERY: &str = r#"
+            query MintPodGpuInventory {
+              gpuTypes {
+                id
+                displayName
+                memoryInGb
+                secureCloud
+                lowestPrice(input: { gpuCount: 1, secureCloud: true }) {
+                  stockStatus
+                  uninterruptablePrice
+                  availableGpuCounts
+                }
+              }
+            }
+        "#;
+        let response = self
+            .http
+            .post(self.graphql_url.as_ref())
+            .bearer_auth(self.api_key.as_ref())
+            .json(&serde_json::json!({ "query": QUERY }))
+            .send()
+            .await?;
+        let response = ensure_success(response).await?;
+        let envelope: GraphqlEnvelope<GpuInventoryData> = response
+            .json()
+            .await
+            .map_err(|error| RunpodError::InvalidResponse(error.to_string()))?;
+        if let Some(errors) = envelope.errors
+            && !errors.is_empty()
+        {
+            return Err(RunpodError::InvalidResponse(
+                errors
+                    .into_iter()
+                    .map(|error| error.message)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        envelope
+            .data
+            .map(|data| data.gpu_types)
+            .ok_or_else(|| RunpodError::InvalidResponse("GraphQL data is missing".to_owned()))
     }
 
     pub async fn create_pod(&self, request: &CreatePodRequest) -> Result<Pod, RunpodError> {
@@ -337,6 +385,44 @@ pub struct NetworkVolume {
     pub data_center_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInventory {
+    pub id: String,
+    pub display_name: String,
+    pub memory_in_gb: u16,
+    pub secure_cloud: bool,
+    pub lowest_price: Option<GpuLowestPrice>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuLowestPrice {
+    pub stock_status: String,
+    #[serde(deserialize_with = "deserialize_number")]
+    pub uninterruptable_price: f64,
+    #[serde(default)]
+    pub available_gpu_counts: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuInventoryData {
+    gpu_types: Vec<GpuInventory>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlEnvelope<T> {
+    data: Option<T>,
+    #[serde(default)]
+    errors: Option<Vec<GraphqlError>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlError {
+    message: String,
+}
+
 fn nonempty(value: &str) -> Option<&str> {
     (!value.trim().is_empty()).then_some(value)
 }
@@ -393,6 +479,14 @@ where
             "expected a number or numeric string, got {other}"
         ))),
     }
+}
+
+fn deserialize_number<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_optional_number(deserializer)?
+        .ok_or_else(|| serde::de::Error::custom("expected a number"))
 }
 
 #[cfg(test)]
@@ -484,6 +578,34 @@ mod tests {
         };
 
         assert!(error.is_not_found());
+    }
+
+    #[test]
+    fn parses_live_gpu_inventory_shape() {
+        let envelope: GraphqlEnvelope<GpuInventoryData> =
+            serde_json::from_value(serde_json::json!({
+                "data": {
+                    "gpuTypes": [{
+                        "id": "NVIDIA RTX A4000",
+                        "displayName": "RTX A4000",
+                        "memoryInGb": 16,
+                        "secureCloud": true,
+                        "lowestPrice": {
+                            "stockStatus": "High",
+                            "uninterruptablePrice": "0.35",
+                            "availableGpuCounts": [1, 2, 4]
+                        }
+                    }]
+                }
+            }))
+            .unwrap();
+
+        let gpu = &envelope.data.unwrap().gpu_types[0];
+        assert_eq!(gpu.id, "NVIDIA RTX A4000");
+        assert_eq!(
+            gpu.lowest_price.as_ref().unwrap().uninterruptable_price,
+            0.35
+        );
     }
 
     #[test]
