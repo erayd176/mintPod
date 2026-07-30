@@ -7,6 +7,7 @@
 
   type Screen =
     | "loading"
+    | "blocked"
     | "setup"
     | "recovery"
     | "idle"
@@ -34,6 +35,18 @@
     maxOutputTokens: number;
     verification: "candidate" | "manuallyTested";
     userDefined: boolean;
+  }
+
+  interface StartupFailure {
+    kind:
+      | "configDirectory"
+      | "keychain"
+      | "localPort"
+      | "userPresets"
+      | "settings";
+    message: string;
+    remedy: string;
+    resettableFile: string | null;
   }
 
   interface Settings {
@@ -198,6 +211,13 @@
     { id: "opencode", name: "OpenCode" },
     { id: "aider", name: "Aider" }
   ] as const;
+  const startupTitles: Record<StartupFailure["kind"], string> = {
+    configDirectory: "Configuration directory unavailable",
+    keychain: "The OS keychain is unavailable",
+    localPort: "Local port 11435 is taken",
+    userPresets: "Your preset file cannot be read",
+    settings: "Your settings file cannot be read"
+  };
 
   let screen: Screen = "loading";
   let presets: Preset[] = [];
@@ -247,6 +267,8 @@
   let preflightBusy = false;
   let diagnosticsCopied = false;
   let endpointCopied = false;
+  let startupFailure: StartupFailure | null = null;
+  let startupBusy = "";
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: selectedGpuTier =
@@ -300,6 +322,11 @@
 
   async function initialize() {
     try {
+      startupFailure = await invoke<StartupFailure | null>("startup_status");
+      if (startupFailure) {
+        screen = "blocked";
+        return;
+      }
       const [keyProfiles, availablePresets, currentSettings, history] = await Promise.all([
         invoke<ApiKeyProfile[]>("list_api_keys"),
         invoke<Preset[]>("list_presets"),
@@ -327,6 +354,38 @@
       errorMessage = messageFrom(error);
       screen = "setup";
     }
+  }
+
+  async function retryStartup() {
+    if (startupBusy) return;
+    startupBusy = "retry";
+    errorMessage = "";
+    try {
+      startupFailure = await invoke<StartupFailure | null>("retry_startup");
+      if (!startupFailure) {
+        screen = "loading";
+        await initialize();
+      }
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    } finally {
+      startupBusy = "";
+    }
+  }
+
+  async function resetLocalConfig(file: string) {
+    if (startupBusy) return;
+    startupBusy = "reset";
+    errorMessage = "";
+    try {
+      await invoke("reset_local_config", { file });
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      startupBusy = "";
+      return;
+    }
+    startupBusy = "";
+    await retryStartup();
   }
 
   async function refreshRecovery(clearError = true) {
@@ -866,6 +925,38 @@
           <div class="center-state">
             <span class="loader"></span>
             <p>Reading local configuration</p>
+          </div>
+        {:else if screen === "blocked" && startupFailure}
+          <div class="blocked-layout">
+            <div>
+              <p class="eyebrow warn">Startup blocked</p>
+              <h1>{startupTitles[startupFailure.kind]}</h1>
+              <p class="lede">{startupFailure.remedy}</p>
+            </div>
+            <p class="detail-block">{startupFailure.message}</p>
+            {#if errorMessage}<p class="inline-error">{errorMessage}</p>{/if}
+            <div class="blocked-actions">
+              {#if startupFailure.resettableFile}
+                <button
+                  class="secondary-button"
+                  type="button"
+                  disabled={Boolean(startupBusy)}
+                  onclick={() => void resetLocalConfig(startupFailure!.resettableFile!)}
+                >
+                  {startupBusy === "reset"
+                    ? "Resetting"
+                    : `Reset ${startupFailure.resettableFile}`}
+                </button>
+              {/if}
+              <button
+                class="primary"
+                type="button"
+                disabled={Boolean(startupBusy)}
+                onclick={retryStartup}
+              >
+                {startupBusy === "retry" ? "Retrying" : "Retry startup"}
+              </button>
+            </div>
           </div>
         {:else if screen === "setup"}
           <div class="setup">

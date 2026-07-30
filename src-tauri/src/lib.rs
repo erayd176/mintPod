@@ -14,10 +14,12 @@ mod presets;
 mod proxy;
 mod runpod;
 mod settings;
+#[cfg(feature = "desktop-runtime")]
+mod startup;
 mod state;
 
 #[cfg(feature = "desktop-runtime")]
-fn migrate_legacy_config(config_dir: &std::path::Path) -> Result<(), std::io::Error> {
+pub(crate) fn migrate_legacy_config(config_dir: &std::path::Path) -> Result<(), std::io::Error> {
     let Some(base) = dirs::config_dir() else {
         return Ok(());
     };
@@ -54,13 +56,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            let config_dir = app.path().app_config_dir()?;
-            migrate_legacy_config(&config_dir)?;
-            std::fs::create_dir_all(&config_dir)?;
-            let gateway_token = credentials::CredentialStore::local_gateway_token()?;
-            let gateway =
-                tauri::async_runtime::block_on(proxy::LocalGateway::start(gateway_token))?;
-            app.manage(state::AppState::load(config_dir, gateway)?);
+            // Startup failures become a blocked screen rather than a panic: a
+            // locked keychain, a taken port, or a hand-edited local document
+            // must never leave the user with no window and no explanation.
+            let handle = app.handle().clone();
+            handle.manage(startup::StartupState::new());
+            startup::initialize(&handle);
             let window = app
                 .get_webview_window("main")
                 .expect("main window is configured");
@@ -106,7 +107,10 @@ pub fn run() {
             commands::stop_session,
             commands::recovery_status,
             commands::cleanup_recovery,
-            commands::recover_session
+            commands::recover_session,
+            commands::startup_status,
+            commands::retry_startup,
+            commands::reset_local_config
         ])
         .run(tauri::generate_context!())
         .expect("failed to run mintPod");

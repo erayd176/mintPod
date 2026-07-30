@@ -20,6 +20,7 @@ use crate::{
     proxy::LOCAL_GATEWAY_URL,
     runpod::{GpuInventory, Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
+    startup::{self, StartupFailure, StartupState},
     state::{ActiveSession, AppState, ExitAction, SessionView},
 };
 
@@ -131,6 +132,21 @@ pub struct ConnectionView {
     base_url: &'static str,
     api_key: String,
     model: String,
+}
+
+#[tauri::command]
+pub fn startup_status(startup: State<'_, StartupState>) -> Option<StartupFailure> {
+    startup.failure()
+}
+
+#[tauri::command]
+pub fn retry_startup(app: AppHandle) -> Option<StartupFailure> {
+    startup::initialize(&app)
+}
+
+#[tauri::command]
+pub fn reset_local_config(file: String, app: AppHandle) -> Result<(), String> {
+    startup::reset_local_config(&app, &file)
 }
 
 #[tauri::command]
@@ -1292,7 +1308,13 @@ fn now_epoch_ms() -> u64 {
 
 pub(crate) async fn shutdown_for_exit(app: AppHandle) -> bool {
     loop {
-        match app.state::<AppState>().prepare_exit().await {
+        // A blocked startup never manages `AppState`, and then there is nothing
+        // paid to wind down.
+        let Some(state) = app.try_state::<AppState>() else {
+            app.exit(0);
+            return true;
+        };
+        match state.prepare_exit().await {
             ExitAction::Exit => {
                 app.exit(0);
                 return true;
