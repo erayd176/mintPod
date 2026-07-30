@@ -251,4 +251,12 @@ impl AppState {
         cancellation.cancel();
         true
     }
+
+    pub async fn runtime_label(&self) -> &'static str {
+        match &*self.runtime.lock().await {
+            RuntimeState::Idle => "idle",
+            RuntimeState::Launching(_) => "launching",
+            RuntimeState::Running(_) => "running",
+        }
+    }
 }

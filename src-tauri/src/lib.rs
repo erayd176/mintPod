@@ -90,6 +90,7 @@ pub fn run() {
             commands::list_cached_models,
             commands::delete_cached_model,
             commands::session_history,
+            commands::diagnostics,
             commands::get_settings,
             commands::set_storage_region,
             commands::set_idle_timeout,

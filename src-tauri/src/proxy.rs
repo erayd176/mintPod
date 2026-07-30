@@ -127,6 +127,13 @@ impl LocalGateway {
     pub fn last_inference_epoch_ms(&self) -> u64 {
         self.last_inference_epoch_ms.load(Ordering::Relaxed)
     }
+
+    pub fn is_connected(&self) -> Result<bool, GatewayError> {
+        self.upstream
+            .read()
+            .map(|upstream| upstream.is_some())
+            .map_err(|_| GatewayError::RoutingLock)
+    }
 }
 
 impl Drop for LocalGateway {

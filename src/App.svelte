@@ -5,7 +5,14 @@
   import { onMount } from "svelte";
   import { fade } from "svelte/transition";
 
-  type Screen = "loading" | "setup" | "idle" | "manage" | "launching" | "running";
+  type Screen =
+    | "loading"
+    | "setup"
+    | "recovery"
+    | "idle"
+    | "manage"
+    | "launching"
+    | "running";
   type BudgetMode = "time" | "cost";
   type LaunchStage =
     | "requestingPod"
@@ -47,6 +54,35 @@
     command: string | null;
     configPath: string | null;
     error: string | null;
+  }
+
+  interface Recovery {
+    launchId: string;
+    podId: string;
+    podName: string;
+    presetId: string;
+    stage: "prepared" | "volumeReady" | "podRequested" | "podCreated" | "ready" | "cleanupPending";
+    createdAtEpochMs: number;
+    remoteStatus: string;
+    costPerHrUsd: number | null;
+    lastError: string | null;
+  }
+
+  interface GpuPreflight {
+    presetId: string;
+    dataCenterId: string;
+    maxHourlyRateUsd: number;
+    regionScopedInventory: boolean;
+    usableGpuTypeIds: string[];
+    candidates: Array<{
+      id: string;
+      displayName: string;
+      memoryInGb: number;
+      stockStatus: string;
+      hourlyRateUsd: number | null;
+      eligible: boolean;
+      reason: string | null;
+    }>;
   }
 
   interface ApiKeyProfile {
@@ -197,6 +233,13 @@
   let customWarning = "";
   let telemetry: SessionTelemetry | null = null;
   let recentSessions: HistoryEntry[] = [];
+  let recovery: Recovery | null = null;
+  let recoveryUnknown = false;
+  let recoveryBusy = "";
+  let cancellingLaunch = false;
+  let preflight: GpuPreflight | null = null;
+  let preflightBusy = false;
+  let diagnosticsCopied = false;
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: selectedGpuTier =
@@ -267,11 +310,65 @@
         "";
       const selected = availablePresets.find((preset) => preset.id === selectedId);
       if (selected) maxHourlyRateUsd = recommendedMaxRate(selected);
-      screen = keyProfiles.length ? "idle" : "setup";
-      if (keyProfiles.length) void refreshCache();
+      if (keyProfiles.length) {
+        await refreshRecovery();
+        void refreshCache();
+      } else {
+        screen = "setup";
+      }
     } catch (error) {
       errorMessage = messageFrom(error);
       screen = "setup";
+    }
+  }
+
+  async function refreshRecovery(clearError = true) {
+    recoveryUnknown = false;
+    if (clearError) errorMessage = "";
+    try {
+      recovery = await invoke<Recovery | null>("recovery_status");
+      screen = recovery ? "recovery" : "idle";
+    } catch (error) {
+      recovery = null;
+      recoveryUnknown = true;
+      errorMessage = messageFrom(error);
+      screen = "recovery";
+    }
+  }
+
+  async function reconnectRecovery() {
+    if (recoveryBusy) return;
+    recoveryBusy = "reconnect";
+    errorMessage = "";
+    try {
+      session = await invoke<Session>("recover_session");
+      initializeTelemetry(session);
+      recovery = null;
+      recoveryUnknown = false;
+      screen = "running";
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      await refreshRecovery(false);
+    } finally {
+      recoveryBusy = "";
+    }
+  }
+
+  async function endRecovery() {
+    if (recoveryBusy) return;
+    recoveryBusy = "cleanup";
+    errorMessage = "";
+    try {
+      await invoke("cleanup_recovery");
+      recovery = null;
+      recoveryUnknown = false;
+      screen = "idle";
+      await refreshCache();
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      recoveryUnknown = true;
+    } finally {
+      recoveryBusy = "";
     }
   }
 
@@ -514,28 +611,74 @@
             ? { kind: "time", minutes: timeBudgetMinutes }
             : { kind: "cost", eur: costBudgetEur }
       });
-      telemetry = {
-        elapsedSeconds: 0,
-        accruedCostEur: 0,
-        costPerHrEur: session.costPerHrEur,
-        budgetKind: budgetMode,
-        budgetRemainingSeconds:
-          budgetMode === "time" ? timeBudgetMinutes * 60 : null,
-        budgetRemainingEur: budgetMode === "cost" ? costBudgetEur : null,
-        idleRemainingSeconds: session.idleTimeoutMinutes * 60
-      };
+      initializeTelemetry(session);
       screen = "running";
     } catch (error) {
       errorMessage = messageFrom(error);
       screen = "idle";
     } finally {
       launchBusy = false;
+      cancellingLaunch = false;
+    }
+  }
+
+  function initializeTelemetry(activeSession: Session) {
+    telemetry = {
+      elapsedSeconds: 0,
+      accruedCostEur: 0,
+      costPerHrEur: activeSession.costPerHrEur,
+      budgetKind: activeSession.budget.kind,
+      budgetRemainingSeconds:
+        activeSession.budget.kind === "time" ? activeSession.budget.minutes * 60 : null,
+      budgetRemainingEur:
+        activeSession.budget.kind === "cost" ? activeSession.budget.eur : null,
+      idleRemainingSeconds: activeSession.idleTimeoutMinutes * 60
+    };
+  }
+
+  async function cancelActiveLaunch() {
+    if (cancellingLaunch) return;
+    cancellingLaunch = true;
+    try {
+      await invoke("cancel_launch");
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      cancellingLaunch = false;
+    }
+  }
+
+  async function checkAvailability() {
+    if (!selectedPreset || preflightBusy) return;
+    preflightBusy = true;
+    errorMessage = "";
+    try {
+      preflight = await invoke<GpuPreflight>("preflight_preset", {
+        presetId: selectedPreset.id,
+        maxHourlyRateUsd
+      });
+    } catch (error) {
+      preflight = null;
+      errorMessage = messageFrom(error);
+    } finally {
+      preflightBusy = false;
     }
   }
 
   function selectPreset(preset: Preset) {
     selectedId = preset.id;
     maxHourlyRateUsd = recommendedMaxRate(preset);
+    preflight = null;
+  }
+
+  async function copyDiagnostics() {
+    try {
+      const report = await invoke<Record<string, unknown>>("diagnostics");
+      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+      diagnosticsCopied = true;
+      window.setTimeout(() => (diagnosticsCopied = false), 1400);
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    }
   }
 
   function recommendedMaxRate(preset: Preset) {
@@ -743,6 +886,76 @@
               </button>
             </form>
           </div>
+        {:else if screen === "recovery"}
+          <div class="recovery-layout">
+            <div>
+              <p class="eyebrow">Session recovery</p>
+              <h1>Paid compute may still exist</h1>
+              <p class="lede">
+                mintPod found durable ownership from an interrupted session. Reconnect only when the
+                runtime is healthy, or end it to stop billing while keeping the model cache.
+              </p>
+            </div>
+            {#if recovery}
+              <div class="recovery-card">
+                <span>
+                  <small>Model</small>
+                  <strong>{presets.find((preset) => preset.id === recovery?.presetId)?.label ?? recovery.presetId}</strong>
+                </span>
+                <span>
+                  <small>RunPod status</small>
+                  <strong>{recovery.remoteStatus}</strong>
+                </span>
+                <span>
+                  <small>Journal stage</small>
+                  <strong>{recovery.stage}</strong>
+                </span>
+                <span>
+                  <small>Reported rate</small>
+                  <strong
+                    >{recovery.costPerHrUsd === null
+                      ? "Unknown"
+                      : `$${recovery.costPerHrUsd.toFixed(2)}/hr`}</strong
+                  >
+                </span>
+              </div>
+              {#if recovery.lastError}<p class="inline-error">{recovery.lastError}</p>{/if}
+            {:else if recoveryUnknown}
+              <div class="recovery-card unavailable">
+                <strong>RunPod could not be reconciled yet.</strong>
+                <small>Check connectivity and the stored API-key profile, then retry.</small>
+              </div>
+            {/if}
+            {#if errorMessage}<p class="inline-error">{errorMessage}</p>{/if}
+            <div class="recovery-actions">
+              <button
+                class="secondary-button"
+                type="button"
+                disabled={Boolean(recoveryBusy)}
+                onclick={() => void refreshRecovery()}
+              >
+                Retry status
+              </button>
+              <button
+                class="secondary-button"
+                type="button"
+                disabled={Boolean(recoveryBusy) ||
+                  !recovery?.podId ||
+                  recovery?.remoteStatus !== "RUNNING"}
+                onclick={reconnectRecovery}
+              >
+                {recoveryBusy === "reconnect" ? "Reconnecting" : "Reconnect"}
+              </button>
+              <button
+                class="danger-button"
+                type="button"
+                disabled={Boolean(recoveryBusy)}
+                onclick={endRecovery}
+              >
+                {recoveryBusy === "cleanup" ? "Ending session" : "End recovered session"}
+              </button>
+            </div>
+          </div>
         {:else if screen === "idle"}
           <div class="idle-layout">
             <div class="screen-heading">
@@ -770,6 +983,9 @@
                         {preset.label}
                         {#if preset.tags.includes("recommended")}
                           <span class="tag">Default</span>
+                        {/if}
+                        {#if preset.verification === "candidate"}
+                          <span class="tag candidate">Candidate</span>
                         {/if}
                       </span>
                       <span class="preset-meta"
@@ -843,7 +1059,13 @@
               </div>
               <div class="budget-row">
                 <span class="field-label">Max GPU rate</span>
-                <span class="rate-note">Actual allocation is rejected above this</span>
+                <button class="rate-note" type="button" onclick={checkAvailability} disabled={preflightBusy}>
+                  {preflightBusy
+                    ? "Checking live stock"
+                    : preflight
+                      ? `${preflight.usableGpuTypeIds.length} acceptable`
+                      : "Check live stock"}
+                </button>
                 <div class="number-field money">
                   <span>$</span>
                   <input
@@ -857,6 +1079,16 @@
                   <span>/hr</span>
                 </div>
               </div>
+              {#if preflight}
+                <div class:unavailable={preflight.usableGpuTypeIds.length === 0} class="preflight-summary">
+                  <span>{preflight.dataCenterId} volume · global Secure Cloud inventory</span>
+                  <strong>
+                    {preflight.usableGpuTypeIds.length
+                      ? preflight.candidates.find((candidate) => candidate.eligible)?.displayName
+                      : "No GPU within limit"}
+                  </strong>
+                </div>
+              {/if}
               {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
               <div class="account-row">
                 <span>RunPod key</span>
@@ -1180,6 +1412,13 @@
                     </label>
                   {/each}
                 </div>
+                <button
+                  class="secondary-button diagnostics-button"
+                  type="button"
+                  onclick={copyDiagnostics}
+                >
+                  {diagnosticsCopied ? "Diagnostics copied" : "Copy safe diagnostics"}
+                </button>
               {/if}
             </div>
           </div>
@@ -1214,7 +1453,19 @@
                 </li>
               {/each}
             </ol>
-            <p class="launch-note">Closing mintPod during launch does not stop the remote pod.</p>
+            <div class="launch-footer">
+              <p class="launch-note">
+                Canceling or closing waits for any paid resources to be cleaned up.
+              </p>
+              <button
+                class="secondary-button launch-cancel"
+                type="button"
+                disabled={cancellingLaunch}
+                onclick={cancelActiveLaunch}
+              >
+                {cancellingLaunch ? "Ending paid resources" : "Cancel launch"}
+              </button>
+            </div>
           </div>
         {:else if screen === "running" && session}
           <div class="running-layout">
@@ -1246,16 +1497,18 @@
                 >
               </div>
               <div class="metric wide">
-                <span>{budgetMode === "time" ? "Time budget" : "Cost budget"}</span>
+                <span>{session.budget.kind === "time" ? "Time budget" : "Cost budget"}</span>
                 <strong>
-                  {budgetMode === "time"
-                    ? formatDuration(telemetry?.budgetRemainingSeconds ?? timeBudgetMinutes * 60)
-                    : formatMoney(telemetry?.budgetRemainingEur ?? costBudgetEur, 3)}
+                  {session.budget.kind === "time"
+                    ? formatDuration(
+                        telemetry?.budgetRemainingSeconds ?? session.budget.minutes * 60
+                      )
+                    : formatMoney(telemetry?.budgetRemainingEur ?? session.budget.eur, 3)}
                 </strong>
                 <small>
-                  {budgetMode === "time"
-                    ? `${timeBudgetMinutes} min limit`
-                    : `${formatMoney(costBudgetEur)} limit`}
+                  {session.budget.kind === "time"
+                    ? `${session.budget.minutes} min limit`
+                    : `${formatMoney(session.budget.eur)} limit`}
                 </small>
               </div>
               <div class="metric wide">
@@ -1265,7 +1518,7 @@
                     telemetry?.idleRemainingSeconds ?? (settings?.idleTimeoutMinutes ?? 10) * 60
                   )}</strong
                 >
-                <small>resets on local API traffic</small>
+                <small>resets on model generation requests</small>
               </div>
             </div>
 
@@ -1292,6 +1545,23 @@
               </svg>
             </button>
 
+            <div class="integration-status-list" aria-label="Integration status">
+              {#each session.integrations as integration}
+                <div class:error={integration.status === "error"}>
+                  <span>{integration.name}</span>
+                  <strong title={integration.error ?? integration.configPath ?? undefined}>
+                    {integration.status === "active"
+                      ? "Connected"
+                      : integration.status === "commandReady"
+                        ? "Command ready"
+                        : integration.status === "notInstalled"
+                          ? "Not installed"
+                          : "Needs attention"}
+                  </strong>
+                </div>
+              {/each}
+            </div>
+
             {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
             <button
               class:holding={holdingStop}
@@ -1306,7 +1576,13 @@
               onkeyup={handleStopKeyup}
               onblur={cancelStop}
             >
-              <span>{stopBusy ? "Stopping pod" : holdingStop ? "Keep holding" : "Hold to stop"}</span>
+              <span
+                >{stopBusy
+                  ? "Ending session"
+                  : holdingStop
+                    ? "Keep holding"
+                    : "Hold to end session"}</span
+              >
             </button>
           </div>
         {/if}

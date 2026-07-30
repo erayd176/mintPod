@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -104,6 +105,24 @@ pub struct GpuPreflightView {
     region_scoped_inventory: bool,
     candidates: Vec<GpuCandidateView>,
     usable_gpu_type_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticsView {
+    app_version: &'static str,
+    runtime_state: &'static str,
+    active_pod_id: Option<String>,
+    recovery_stage: Option<JournalStage>,
+    recovery_last_error: Option<String>,
+    local_endpoint: &'static str,
+    local_gateway_connected: bool,
+    runtime_image: &'static str,
+    storage_region: String,
+    idle_timeout_minutes: u16,
+    integrations: crate::settings::IntegrationPreferences,
+    api_key_profile_count: usize,
+    config_files: Vec<PathBuf>,
 }
 
 #[tauri::command]
@@ -268,6 +287,42 @@ pub async fn delete_cached_model(
 #[tauri::command]
 pub fn session_history(state: State<'_, AppState>) -> Result<Vec<SessionHistoryEntry>, String> {
     history::recent(&state.history_path, 5).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn diagnostics(state: State<'_, AppState>) -> Result<DiagnosticsView, String> {
+    let settings = state
+        .settings()
+        .map_err(|_| "settings lock is poisoned".to_owned())?
+        .clone();
+    let journal = SessionJournalStore::load(&state.session_journal_path)
+        .map_err(|error| error.to_string())?;
+    let api_key_profile_count = CredentialStore::list_profiles(&state.credential_index_path)
+        .map_err(|error| error.to_string())?
+        .len();
+    Ok(DiagnosticsView {
+        app_version: env!("CARGO_PKG_VERSION"),
+        runtime_state: state.runtime_label().await,
+        active_pod_id: state.running_pod_id().await,
+        recovery_stage: journal.as_ref().map(|journal| journal.stage),
+        recovery_last_error: journal.and_then(|journal| journal.last_error),
+        local_endpoint: LOCAL_GATEWAY_URL,
+        local_gateway_connected: state
+            .gateway
+            .is_connected()
+            .map_err(|error| error.to_string())?,
+        runtime_image: crate::runpod::MINTPOD_RUNTIME_IMAGE,
+        storage_region: settings.storage_region,
+        idle_timeout_minutes: settings.idle_timeout_minutes,
+        integrations: settings.integrations,
+        api_key_profile_count,
+        config_files: vec![
+            PathBuf::from("settings.json"),
+            PathBuf::from("api-keys.json"),
+            PathBuf::from("active-session.json"),
+            PathBuf::from("session-history.json"),
+        ],
+    })
 }
 
 #[tauri::command]

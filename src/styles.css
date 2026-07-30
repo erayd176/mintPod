@@ -308,10 +308,69 @@ button:disabled {
 .idle-layout,
 .manage-layout,
 .launching-layout,
-.running-layout {
+.running-layout,
+.recovery-layout {
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+.recovery-layout {
+  gap: 16px;
+  padding: 6px 3px 3px;
+}
+
+.recovery-card {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #292e34;
+  border-radius: 9px;
+  background: #292e34;
+}
+
+.recovery-card > span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px;
+  background: #111419;
+}
+
+.recovery-card small {
+  color: #696f77;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.recovery-card strong {
+  overflow: hidden;
+  color: #d7d9d4;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-card.unavailable {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  color: #d8b77d;
+  background: #1b1710;
+}
+
+.recovery-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: auto;
+}
+
+.recovery-actions .danger-button {
+  grid-column: 1 / -1;
 }
 
 .manage-layout {
@@ -675,6 +734,21 @@ button:disabled {
   background: #293038;
 }
 
+.danger-button {
+  min-height: 36px;
+  border: 1px solid #5a2a2d;
+  border-radius: 8px;
+  color: #ee9699;
+  background: #231315;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: #743438;
+  background: #2c1719;
+}
+
 .runtime-settings {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -717,6 +791,11 @@ button:disabled {
   width: 14px;
   height: 14px;
   accent-color: var(--green);
+}
+
+.diagnostics-button {
+  width: 100%;
+  margin-top: 7px;
 }
 
 .screen-heading,
@@ -911,12 +990,51 @@ button:disabled {
 }
 
 .rate-note {
+  justify-self: end;
+  padding: 0;
   overflow: hidden;
+  border: 0;
   color: #60666e;
+  background: transparent;
   font-size: 8px;
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rate-note:hover:not(:disabled) {
+  color: var(--green);
+}
+
+.preflight-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgb(114 212 155 / 18%);
+  border-radius: 7px;
+  color: #6f7771;
+  background: rgb(114 212 155 / 5%);
+  font-size: 8px;
+}
+
+.preflight-summary strong {
+  overflow: hidden;
+  color: #a8c9b4;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preflight-summary.unavailable {
+  border-color: #5d4a26;
+  color: #9b875f;
+  background: #1c1811;
+}
+
+.preflight-summary.unavailable strong {
+  color: #d6b675;
 }
 
 .segmented {
@@ -1137,10 +1255,20 @@ button:disabled {
 }
 
 .launch-note {
-  margin: auto 0 0;
+  margin: 0;
   color: #51565e;
   font-size: 8.5px;
   line-height: 1.4;
+}
+
+.launch-footer {
+  display: grid;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.launch-cancel {
+  width: 100%;
 }
 
 .running-layout {
@@ -1299,6 +1427,41 @@ button:disabled {
   font-size: 7.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.integration-status-list {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.integration-status-list > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid #24282e;
+  border-radius: 7px;
+  background: #111419;
+}
+
+.integration-status-list span {
+  color: #6d737b;
+  font-size: 7px;
+}
+
+.integration-status-list strong {
+  overflow: hidden;
+  color: #9da29c;
+  font-size: 7.5px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.integration-status-list .error strong {
+  color: #e48a8d;
 }
 
 .copy-icon {
