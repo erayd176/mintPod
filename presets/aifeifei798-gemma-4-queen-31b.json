@@ -1,0 +1,25 @@
+{
+  "id": "aifeifei798-gemma-4-queen-31b",
+  "label": "Gemma 4 Queen 31B (Uncensored)",
+  "ollamaTag": "ttempvnn/aifeifei798-Gemma-4-Queen-31B-it-uncensored-heretic-Q4-K-M:latest",
+  "sizeGb": 19.0,
+  "minVramGb": 80,
+  "gpuTypeIds": [
+    "NVIDIA A100 80GB PCIe",
+    "NVIDIA A100-SXM4-80GB",
+    "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+    "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+    "NVIDIA H100 PCIe",
+    "NVIDIA H100 80GB HBM3",
+    "NVIDIA H100 NVL",
+    "NVIDIA H200",
+    "NVIDIA H200 NVL",
+    "NVIDIA B200"
+  ],
+  "estCostPerHr": 1.5,
+  "tags": ["coding", "long-context", "uncensored", "vision"],
+  "contextLength": 262144,
+  "maxOutputTokens": 16384,
+  "verification": "candidate"
+}

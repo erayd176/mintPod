@@ -542,7 +542,8 @@ fn gpu_candidate(
         Some("no live Secure Cloud price".to_owned())
     } else if gpu.lowest_price.as_ref().is_some_and(|lowest| {
         lowest.stock_status.eq_ignore_ascii_case("none")
-            || !lowest.available_gpu_counts.contains(&1)
+            || (!lowest.available_gpu_counts.is_empty()
+                && !lowest.available_gpu_counts.contains(&1))
     }) {
         Some("no single-GPU capacity is currently reported".to_owned())
     } else if price.is_some_and(|price| price > max_hourly_rate_usd) {
@@ -1325,7 +1326,7 @@ mod tests {
                     lowest_price: Some(GpuLowestPrice {
                         stock_status: "High".to_owned(),
                         uninterruptable_price: 0.45,
-                        available_gpu_counts: vec![1],
+                        available_gpu_counts: Vec::new(),
                     }),
                 },
             ),

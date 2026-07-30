@@ -24,6 +24,10 @@ const CURATED: &[(&str, &str)] = &[
         "devstral-small-2-24b.json",
         include_str!("../../presets/devstral-small-2-24b.json"),
     ),
+    (
+        "aifeifei798-gemma-4-queen-31b.json",
+        include_str!("../../presets/aifeifei798-gemma-4-queen-31b.json"),
+    ),
 ];
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -384,7 +388,7 @@ mod tests {
     fn curated_presets_satisfy_the_shipped_schema() {
         let catalog = PresetCatalog::load(&missing_user_file()).unwrap();
 
-        assert_eq!(catalog.list().len(), 3);
+        assert_eq!(catalog.list().len(), 4);
         assert!(catalog.list().iter().all(|entry| !entry.user_defined));
         assert!(
             catalog
@@ -406,6 +410,19 @@ mod tests {
         let preset = catalog.find("qwen3-coder-30b").unwrap();
 
         assert_eq!(preset.volume_size_gb(), 26);
+    }
+
+    #[test]
+    fn gemma_queen_uses_the_full_context_and_large_gpu_tier() {
+        let catalog = PresetCatalog::load(&missing_user_file()).unwrap();
+        let preset = catalog.find("aifeifei798-gemma-4-queen-31b").unwrap();
+
+        assert_eq!(preset.context_length, 262_144);
+        assert_eq!(preset.min_vram_gb, 80);
+        assert_eq!(
+            preset.ollama_tag,
+            "ttempvnn/aifeifei798-Gemma-4-Queen-31B-it-uncensored-heretic-Q4-K-M:latest"
+        );
     }
 
     #[test]

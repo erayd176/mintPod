@@ -4,7 +4,7 @@ Launch a private coding model on RunPod, use it from your local agent tools, and
 
 mintPod is a focused Tauri desktop app for developers who want a larger open model than their machine can run without repeatedly rebuilding RunPod pods, copying endpoint URLs, editing tool configuration, or wondering whether a GPU was left billing.
 
-> **Release status:** pre-release `0.1.0`. The lifecycle and integration paths are covered by local tests. The three shipped model/GPU profiles are deliberately marked **Candidate** until each passes the paid contract matrix on real RunPod capacity.
+> **Release status:** pre-release `0.1.0`. The lifecycle and integration paths are covered by local tests. The four shipped model/GPU profiles are deliberately marked **Candidate** until each passes the paid contract matrix on real RunPod capacity.
 
 ## The workflow
 
@@ -46,6 +46,7 @@ Integrations can be disabled independently under **Manage**. A missing tool is r
 | gpt-oss 20B | `gpt-oss:20b` | 14 GB | 24 GB | 65,536 | Candidate |
 | Qwen3-Coder 30B | `qwen3-coder:30b` | 19 GB | 48 GB | 65,536 | Candidate |
 | Devstral Small 2 24B | `devstral-small-2:24b` | 15 GB | 48 GB | 65,536 | Candidate |
+| Gemma 4 Queen 31B (Uncensored) | `ttempvnn/aifeifei798-Gemma-4-Queen-31B-it-uncensored-heretic-Q4-K-M:latest` | 19 GB | 80 GB | 262,144 | Candidate |
 
 The catalog is small on purpose. A profile is a tested product contract—exact model tag, ordered RunPod GPU IDs, minimum VRAM, context, output limit, storage size, and expected rate—not merely a link to an Ollama tag. Ollama recommends at least 64K context for coding agents; mintPod sets it explicitly and verifies the loaded value through `/api/ps`.
 

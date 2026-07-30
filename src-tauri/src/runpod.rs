@@ -392,6 +392,7 @@ pub struct GpuInventory {
     pub display_name: String,
     pub memory_in_gb: u16,
     pub secure_cloud: bool,
+    #[serde(default, deserialize_with = "deserialize_gpu_lowest_price")]
     pub lowest_price: Option<GpuLowestPrice>,
 }
 
@@ -399,10 +400,19 @@ pub struct GpuInventory {
 #[serde(rename_all = "camelCase")]
 pub struct GpuLowestPrice {
     pub stock_status: String,
-    #[serde(deserialize_with = "deserialize_number")]
     pub uninterruptable_price: f64,
-    #[serde(default)]
     pub available_gpu_counts: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuLowestPriceWire {
+    #[serde(default)]
+    stock_status: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_number")]
+    uninterruptable_price: Option<f64>,
+    #[serde(default)]
+    available_gpu_counts: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -481,12 +491,27 @@ where
     }
 }
 
-fn deserialize_number<'de, D>(deserializer: D) -> Result<f64, D::Error>
+fn deserialize_gpu_lowest_price<'de, D>(deserializer: D) -> Result<Option<GpuLowestPrice>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_optional_number(deserializer)?
-        .ok_or_else(|| serde::de::Error::custom("expected a number"))
+    let Some(price) = Option::<GpuLowestPriceWire>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let Some(stock_status) = price
+        .stock_status
+        .filter(|status| !status.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(uninterruptable_price) = price.uninterruptable_price else {
+        return Ok(None);
+    };
+    Ok(Some(GpuLowestPrice {
+        stock_status,
+        uninterruptable_price,
+        available_gpu_counts: price.available_gpu_counts.unwrap_or_default(),
+    }))
 }
 
 #[cfg(test)]
@@ -585,27 +610,49 @@ mod tests {
         let envelope: GraphqlEnvelope<GpuInventoryData> =
             serde_json::from_value(serde_json::json!({
                 "data": {
-                    "gpuTypes": [{
-                        "id": "NVIDIA RTX A4000",
-                        "displayName": "RTX A4000",
-                        "memoryInGb": 16,
-                        "secureCloud": true,
-                        "lowestPrice": {
-                            "stockStatus": "High",
-                            "uninterruptablePrice": "0.35",
-                            "availableGpuCounts": [1, 2, 4]
+                    "gpuTypes": [
+                        {
+                            "id": "NVIDIA RTX A4000",
+                            "displayName": "RTX A4000",
+                            "memoryInGb": 16,
+                            "secureCloud": true,
+                            "lowestPrice": {
+                                "stockStatus": "High",
+                                "uninterruptablePrice": "0.35",
+                                "availableGpuCounts": null
+                            }
+                        },
+                        {
+                            "id": "NVIDIA RTX 4000 Ada Generation",
+                            "displayName": "RTX 4000 Ada",
+                            "memoryInGb": 20,
+                            "secureCloud": true,
+                            "lowestPrice": {
+                                "stockStatus": null,
+                                "uninterruptablePrice": null,
+                                "availableGpuCounts": null
+                            }
                         }
-                    }]
+                    ]
                 }
             }))
             .unwrap();
 
-        let gpu = &envelope.data.unwrap().gpu_types[0];
+        let gpu_types = envelope.data.unwrap().gpu_types;
+        let gpu = &gpu_types[0];
         assert_eq!(gpu.id, "NVIDIA RTX A4000");
         assert_eq!(
             gpu.lowest_price.as_ref().unwrap().uninterruptable_price,
             0.35
         );
+        assert!(
+            gpu.lowest_price
+                .as_ref()
+                .unwrap()
+                .available_gpu_counts
+                .is_empty()
+        );
+        assert!(gpu_types[1].lowest_price.is_none());
     }
 
     #[test]
