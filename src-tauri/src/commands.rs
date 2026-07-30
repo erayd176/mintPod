@@ -9,13 +9,14 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::{
     credentials::{CredentialProfile, CredentialStore, generate_secret},
     fx,
-    harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
+    harness::{HarnessConnection, IntegrationManager, IntegrationReceipt},
     history::{self, SessionHistoryEntry},
     journal::{JournalStage, NewSessionJournal, SessionJournal, SessionJournalStore},
     lifecycle::{BudgetTracker, LaunchBudget, StopReason},
     ollama::OllamaClient,
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchSpec, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
+    proxy::LOCAL_GATEWAY_URL,
     runpod::{GpuInventory, Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, SessionView},
@@ -306,6 +307,36 @@ pub fn set_idle_timeout(minutes: u16, state: State<'_, AppState>) -> Result<(), 
 }
 
 #[tauri::command]
+pub async fn set_integration_enabled(
+    integration_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .require_idle()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut settings = state
+        .settings_mut()
+        .map_err(|_| "settings lock is poisoned".to_owned())?;
+    let mut updated = settings.clone();
+    match integration_id.as_str() {
+        "pi" => updated.integrations.pi = enabled,
+        "opencode" => updated.integrations.opencode = enabled,
+        "aider" => updated.integrations.aider = enabled,
+        _ => return Err(format!("unknown integration: {integration_id}")),
+    }
+    SettingsStore::save(&state.settings_path, &updated).map_err(|error| error.to_string())?;
+    let cleanup_errors = IntegrationManager::unpublish(&settings.integrations);
+    *settings = updated;
+    if cleanup_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(cleanup_errors.join("; "))
+    }
+}
+
+#[tauri::command]
 pub async fn list_api_keys(state: State<'_, AppState>) -> Result<Vec<CredentialProfile>, String> {
     CredentialStore::list_profiles(&state.credential_index_path).map_err(|error| error.to_string())
 }
@@ -489,11 +520,12 @@ pub async fn launch_preset(
     )
     .await;
     match result {
-        Ok((session, wiring, runpod, usd_to_eur)) => {
+        Ok((session, integrations, runpod, usd_to_eur)) => {
             let cost_per_hr_eur = session.cost_per_hr_usd * usd_to_eur;
             let view = SessionView {
                 session,
-                wiring,
+                integrations,
+                endpoint_url: LOCAL_GATEWAY_URL,
                 budget,
                 idle_timeout_minutes,
                 cost_per_hr_eur,
@@ -523,7 +555,7 @@ async fn launch_preset_inner(
     cancellation: tokio_util::sync::CancellationToken,
     app: &AppHandle,
     state: &State<'_, AppState>,
-) -> Result<(RunningSession, WiringReceipt, RunpodClient, f64), String> {
+) -> Result<(RunningSession, Vec<IntegrationReceipt>, RunpodClient, f64), String> {
     let mut preset = state
         .presets()
         .map_err(|_| "preset catalog lock is poisoned".to_owned())?
@@ -655,40 +687,45 @@ async fn launch_preset_inner(
         .gateway
         .connect(&session.remote_url, &session.remote_token)
         .map_err(|error| error.to_string())?;
-    let adapter = match PiAdapter::system() {
-        Ok(adapter) => adapter,
-        Err(error) => {
-            let _ = state.gateway.disconnect();
-            return Err(error.to_string());
-        }
-    };
-    let wiring = match adapter.wire(&HarnessConnection {
-        url: LOCAL_PROXY_URL,
-        api_key: state.gateway.token(),
-        preset: &preset,
-    }) {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            let _ = state.gateway.disconnect();
-            return Err(error.to_string());
-        }
-    };
+    journal.stage = JournalStage::Ready;
+    journal.last_error = None;
+    SessionJournalStore::save(&state.session_journal_path, &journal)
+        .map_err(|error| error.to_string())?;
+    let preferences = state
+        .settings()
+        .map_err(|_| "settings lock is poisoned".to_owned())?
+        .integrations
+        .clone();
+    let integrations = IntegrationManager::publish(
+        &HarnessConnection {
+            url: LOCAL_GATEWAY_URL,
+            api_key: state.gateway.token(),
+            preset: &preset,
+        },
+        &preferences,
+    );
+    let active_count = integrations
+        .iter()
+        .filter(|receipt| {
+            matches!(
+                receipt.status,
+                crate::harness::IntegrationStatus::Active
+                    | crate::harness::IntegrationStatus::CommandReady
+            )
+        })
+        .count();
     let _ = app.emit(
         "launch-progress",
         LaunchEvent {
             stage: LaunchStage::Ready,
-            detail: "Wired into Pi".to_owned(),
+            detail: format!("Model ready · {active_count} integrations available"),
             completed_bytes: None,
             total_bytes: None,
             skipped: false,
         },
     );
-    journal.stage = JournalStage::Ready;
-    journal.last_error = None;
-    SessionJournalStore::save(&state.session_journal_path, &journal)
-        .map_err(|error| error.to_string())?;
 
-    Ok((session, wiring, runpod, usd_to_eur))
+    Ok((session, integrations, runpod, usd_to_eur))
 }
 
 fn spawn_launch_budget_guard(
@@ -854,14 +891,6 @@ async fn recover_session_inner(
         .gateway
         .connect(&remote_url, &remote_token)
         .map_err(|error| error.to_string())?;
-    let adapter = PiAdapter::system().map_err(|error| error.to_string())?;
-    let wiring = adapter
-        .wire(&HarnessConnection {
-            url: LOCAL_PROXY_URL,
-            api_key: state.gateway.token(),
-            preset: &preset,
-        })
-        .map_err(|error| error.to_string())?;
     let cost_per_hr_usd = pod
         .effective_cost_per_hr()
         .ok_or_else(|| "RunPod did not return a cost for the recovered pod".to_owned())?;
@@ -882,9 +911,9 @@ async fn recover_session_inner(
         .to_owned();
     let session = RunningSession {
         pod_id: pod.id,
-        preset_id: preset.id,
-        model_label: preset.label,
-        ollama_tag: preset.ollama_tag,
+        preset_id: preset.id.clone(),
+        model_label: preset.label.clone(),
+        ollama_tag: preset.ollama_tag.clone(),
         gpu_name,
         data_center_id,
         remote_url,
@@ -899,11 +928,25 @@ async fn recover_session_inner(
     journal.last_error = None;
     SessionJournalStore::save(&state.session_journal_path, &journal)
         .map_err(|error| error.to_string())?;
+    let preferences = state
+        .settings()
+        .map_err(|_| "settings lock is poisoned".to_owned())?
+        .integrations
+        .clone();
+    let integrations = IntegrationManager::publish(
+        &HarnessConnection {
+            url: LOCAL_GATEWAY_URL,
+            api_key: state.gateway.token(),
+            preset: &preset,
+        },
+        &preferences,
+    );
     Ok((
         SessionView {
             cost_per_hr_eur: cost_per_hr_usd * usd_to_eur,
             session,
-            wiring,
+            integrations,
+            endpoint_url: LOCAL_GATEWAY_URL,
             budget: journal.budget,
             idle_timeout_minutes: journal.idle_timeout_minutes,
             max_hourly_rate_usd: journal.max_hourly_rate_usd,
@@ -1012,6 +1055,12 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
         .disconnect()
         .err()
         .map(|error| error.to_string());
+    let integration_error = state
+        .settings()
+        .ok()
+        .map(|settings| IntegrationManager::unpublish(&settings.integrations))
+        .filter(|errors| !errors.is_empty())
+        .map(|errors| errors.join("; "));
     let now = now_epoch_ms();
     let duration_seconds = now.saturating_sub(view.session.started_at_epoch_ms) / 1_000;
     let final_cost_eur = telemetry
@@ -1037,7 +1086,10 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
         "session-stopped",
         SessionStoppedEvent {
             reason,
-            history_error: history_error.or(journal_cleanup_error).or(gateway_error),
+            history_error: history_error
+                .or(journal_cleanup_error)
+                .or(gateway_error)
+                .or(integration_error),
         },
     );
     Ok(())
@@ -1132,6 +1184,9 @@ async fn resolve_journal_pod(
 }
 
 fn clear_local_ownership(state: &AppState, journal: &SessionJournal) -> Result<(), String> {
+    if let Ok(settings) = state.settings() {
+        let _ = IntegrationManager::unpublish(&settings.integrations);
+    }
     CredentialStore::delete_runtime_token(&journal.launch_id).map_err(|error| error.to_string())?;
     SessionJournalStore::clear(&state.session_journal_path).map_err(|error| error.to_string())
 }

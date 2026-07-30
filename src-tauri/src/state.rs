@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    harness::WiringReceipt,
+    harness::IntegrationReceipt,
     journal::{JournalError, load_or_create_install_id},
     lifecycle::{LaunchBudget, SessionTelemetry},
     orchestrator::RunningSession,
@@ -22,7 +22,8 @@ use crate::{
 pub struct SessionView {
     #[serde(flatten)]
     pub session: RunningSession,
-    pub wiring: WiringReceipt,
+    pub integrations: Vec<IntegrationReceipt>,
+    pub endpoint_url: &'static str,
     pub budget: LaunchBudget,
     pub idle_timeout_minutes: u16,
     pub cost_per_hr_eur: f64,

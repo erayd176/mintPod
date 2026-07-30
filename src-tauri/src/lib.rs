@@ -93,6 +93,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_storage_region,
             commands::set_idle_timeout,
+            commands::set_integration_enabled,
             commands::list_api_keys,
             commands::add_api_key,
             commands::replace_api_key,

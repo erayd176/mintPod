@@ -17,6 +17,26 @@ pub const VERIFIED_STORAGE_REGIONS: &[&str] = &[
 pub struct AppSettings {
     pub storage_region: String,
     pub idle_timeout_minutes: u16,
+    #[serde(default)]
+    pub integrations: IntegrationPreferences,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IntegrationPreferences {
+    pub pi: bool,
+    pub opencode: bool,
+    pub aider: bool,
+}
+
+impl Default for IntegrationPreferences {
+    fn default() -> Self {
+        Self {
+            pi: true,
+            opencode: true,
+            aider: true,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -24,6 +44,7 @@ impl Default for AppSettings {
         Self {
             storage_region: "EU-RO-1".to_owned(),
             idle_timeout_minutes: 10,
+            integrations: IntegrationPreferences::default(),
         }
     }
 }
@@ -119,6 +140,7 @@ mod tests {
         let error = validate(&AppSettings {
             storage_region: "MARS-1".to_owned(),
             idle_timeout_minutes: 10,
+            integrations: IntegrationPreferences::default(),
         })
         .unwrap_err();
 

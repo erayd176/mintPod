@@ -32,7 +32,21 @@
   interface Settings {
     storageRegion: string;
     idleTimeoutMinutes: number;
+    integrations: {
+      pi: boolean;
+      opencode: boolean;
+      aider: boolean;
+    };
     verifiedStorageRegions: string[];
+  }
+
+  interface IntegrationReceipt {
+    id: "pi" | "opencode" | "aider";
+    name: string;
+    status: "active" | "commandReady" | "notInstalled" | "error";
+    command: string | null;
+    configPath: string | null;
+    error: string | null;
   }
 
   interface ApiKeyProfile {
@@ -93,11 +107,8 @@
     budget:
       | { kind: "time"; minutes: number }
       | { kind: "cost"; eur: number };
-    wiring: {
-      harness: string;
-      command: string;
-      configPath: string;
-    };
+    endpointUrl: string;
+    integrations: IntegrationReceipt[];
   }
 
   interface SessionTelemetry {
@@ -140,6 +151,11 @@
     { id: "warmingUp", label: "Warming up" },
     { id: "ready", label: "Ready" }
   ];
+  const integrationOptions = [
+    { id: "pi", name: "Pi" },
+    { id: "opencode", name: "OpenCode" },
+    { id: "aider", name: "Aider" }
+  ] as const;
 
   let screen: Screen = "loading";
   let presets: Preset[] = [];
@@ -283,6 +299,16 @@
       await invoke("set_idle_timeout", { minutes: settings.idleTimeoutMinutes });
     } catch (error) {
       errorMessage = messageFrom(error);
+    }
+  }
+
+  async function updateIntegration(integrationId: "pi" | "opencode" | "aider", enabled: boolean) {
+    if (!settings) return;
+    try {
+      await invoke("set_integration_enabled", { integrationId, enabled });
+    } catch (error) {
+      errorMessage = messageFrom(error);
+      settings = await invoke<Settings>("get_settings");
     }
   }
 
@@ -545,7 +571,8 @@
 
   async function copyCommand() {
     if (!session) return;
-    await navigator.clipboard.writeText(session.wiring.command);
+    const command = session.integrations.find((integration) => integration.command)?.command;
+    await navigator.clipboard.writeText(command ?? session.endpointUrl);
     copied = true;
     window.setTimeout(() => (copied = false), 1400);
   }
@@ -1137,6 +1164,22 @@
                     </span>
                   </label>
                 </div>
+                <div class="integration-settings">
+                  {#each integrationOptions as integration}
+                    <label>
+                      <span>{integration.name}</span>
+                      <input
+                        type="checkbox"
+                        checked={settings.integrations[integration.id]}
+                        onchange={(event) => {
+                          const enabled = event.currentTarget.checked;
+                          settings!.integrations[integration.id] = enabled;
+                          void updateIntegration(integration.id, enabled);
+                        }}
+                      />
+                    </label>
+                  {/each}
+                </div>
               {/if}
             </div>
           </div>
@@ -1231,8 +1274,17 @@
                 <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8.2 2.4 2.4L12 5" /></svg>
               </span>
               <span>
-                <strong>Wired into {session.wiring.harness}</strong>
-                <small>{copied ? "Command copied" : session.wiring.command}</small>
+                <strong
+                  >{session.integrations.filter((item) =>
+                    item.status === "active" || item.status === "commandReady"
+                  ).length} integrations ready</strong
+                >
+                <small
+                  >{copied
+                    ? "Command copied"
+                    : session.integrations.find((item) => item.command)?.command ??
+                      session.endpointUrl}</small
+                >
               </span>
               <svg class="copy-icon" viewBox="0 0 16 16" aria-hidden="true">
                 <rect x="5.5" y="5.5" width="7" height="7" rx="1" />

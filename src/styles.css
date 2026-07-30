@@ -695,6 +695,30 @@ button:disabled {
   height: 32px;
 }
 
+.integration-settings {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.integration-settings label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 31px;
+  padding: 0 8px;
+  border: 1px solid #24282e;
+  border-radius: 8px;
+  background: #111419;
+}
+
+.integration-settings input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--green);
+}
+
 .screen-heading,
 .running-head {
   display: flex;

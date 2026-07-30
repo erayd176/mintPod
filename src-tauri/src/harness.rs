@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -9,11 +9,11 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 
-use crate::presets::Preset;
+use crate::{presets::Preset, settings::IntegrationPreferences};
 
-pub const LOCAL_PROXY_URL: &str = crate::proxy::LOCAL_GATEWAY_URL;
 const PI_PROVIDER_ID: &str = "mintpod";
 const LEGACY_PI_PROVIDER_ID: &str = "podpilot";
+const OPENCODE_PROVIDER_ID: &str = "mintpod";
 
 pub struct HarnessConnection<'a> {
     pub url: &'a str,
@@ -21,26 +21,30 @@ pub struct HarnessConnection<'a> {
     pub preset: &'a Preset,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum IntegrationStatus {
+    Active,
+    CommandReady,
+    NotInstalled,
+    Error,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WiringReceipt {
-    pub harness: &'static str,
-    pub command: String,
-    pub config_path: PathBuf,
-}
-
-pub trait HarnessAdapter: Send + Sync {
-    fn wire(&self, connection: &HarnessConnection<'_>) -> Result<WiringReceipt, HarnessError>;
-}
-
-pub struct PiAdapter {
-    agent_dir: PathBuf,
+pub struct IntegrationReceipt {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub status: IntegrationStatus,
+    pub command: Option<String>,
+    pub config_path: Option<PathBuf>,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Error)]
 pub enum HarnessError {
-    #[error("could not locate the home directory for Pi configuration")]
-    HomeDirectoryUnavailable,
+    #[error("could not locate the configuration directory for {0}")]
+    ConfigDirectoryUnavailable(&'static str),
     #[error("could not read {path}: {source}")]
     Read {
         path: PathBuf,
@@ -64,151 +68,329 @@ pub enum HarnessError {
         #[source]
         source: std::io::Error,
     },
-    #[error("could not restore {path} after a failed Pi configuration update: {source}")]
-    Rollback {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+}
+
+pub struct IntegrationManager;
+
+impl IntegrationManager {
+    pub fn publish(
+        connection: &HarnessConnection<'_>,
+        preferences: &IntegrationPreferences,
+    ) -> Vec<IntegrationReceipt> {
+        let mut receipts = Vec::with_capacity(3);
+        if preferences.pi {
+            receipts.push(configured_receipt("pi", "Pi", "pi", || {
+                PiAdapter::system().and_then(|adapter| adapter.publish(connection))
+            }));
+        }
+        if preferences.opencode {
+            receipts.push(configured_receipt(
+                "opencode",
+                "OpenCode",
+                "opencode",
+                || OpenCodeAdapter::system().and_then(|adapter| adapter.publish(connection)),
+            ));
+        }
+        if preferences.aider {
+            receipts.push(aider_receipt(connection));
+        }
+        receipts
+    }
+
+    pub fn unpublish(preferences: &IntegrationPreferences) -> Vec<String> {
+        let mut errors = Vec::new();
+        if preferences.pi
+            && let Err(error) = PiAdapter::system().and_then(|adapter| adapter.unpublish())
+        {
+            errors.push(error.to_string());
+        }
+        if preferences.opencode
+            && let Err(error) = OpenCodeAdapter::system().and_then(|adapter| adapter.unpublish())
+        {
+            errors.push(error.to_string());
+        }
+        errors
+    }
+}
+
+fn configured_receipt<F>(
+    id: &'static str,
+    name: &'static str,
+    binary: &str,
+    publish: F,
+) -> IntegrationReceipt
+where
+    F: FnOnce() -> Result<(String, PathBuf), HarnessError>,
+{
+    if !command_exists(binary) {
+        return IntegrationReceipt {
+            id,
+            name,
+            status: IntegrationStatus::NotInstalled,
+            command: None,
+            config_path: None,
+            error: None,
+        };
+    }
+    match publish() {
+        Ok((command, config_path)) => IntegrationReceipt {
+            id,
+            name,
+            status: IntegrationStatus::Active,
+            command: Some(command),
+            config_path: Some(config_path),
+            error: None,
+        },
+        Err(error) => IntegrationReceipt {
+            id,
+            name,
+            status: IntegrationStatus::Error,
+            command: None,
+            config_path: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn aider_receipt(connection: &HarnessConnection<'_>) -> IntegrationReceipt {
+    if !command_exists("aider") {
+        return IntegrationReceipt {
+            id: "aider",
+            name: "Aider",
+            status: IntegrationStatus::NotInstalled,
+            command: None,
+            config_path: None,
+            error: None,
+        };
+    }
+    IntegrationReceipt {
+        id: "aider",
+        name: "Aider",
+        status: IntegrationStatus::CommandReady,
+        command: Some(aider_command(connection)),
+        config_path: None,
+        error: None,
+    }
+}
+
+struct PiAdapter {
+    path: PathBuf,
 }
 
 impl PiAdapter {
-    pub fn system() -> Result<Self, HarnessError> {
-        let home = dirs::home_dir().ok_or(HarnessError::HomeDirectoryUnavailable)?;
+    fn system() -> Result<Self, HarnessError> {
+        let home = dirs::home_dir().ok_or(HarnessError::ConfigDirectoryUnavailable("Pi"))?;
         Ok(Self {
-            agent_dir: home.join(".pi").join("agent"),
+            path: home.join(".pi").join("agent").join("models.json"),
         })
     }
 
     #[cfg(test)]
-    fn at(agent_dir: PathBuf) -> Self {
-        Self { agent_dir }
+    fn at(path: PathBuf) -> Self {
+        Self { path }
     }
 
-    fn legacy_path(&self) -> PathBuf {
-        self.agent_dir.join("local-models.json")
-    }
-
-    fn current_path(&self) -> PathBuf {
-        self.agent_dir.join("models.json")
-    }
-}
-
-impl HarnessAdapter for PiAdapter {
-    fn wire(&self, connection: &HarnessConnection<'_>) -> Result<WiringReceipt, HarnessError> {
-        fs::create_dir_all(&self.agent_dir).map_err(|source| HarnessError::Write {
-            path: self.agent_dir.clone(),
-            source,
-        })?;
-
-        let legacy_path = self.legacy_path();
-        let current_path = self.current_path();
-        let legacy_original = read_optional(&legacy_path)?;
-        let mut legacy = parse_document(&legacy_path, legacy_original.as_deref())?;
-        let legacy_root = root_object(&legacy_path, &mut legacy)?;
-        legacy_root.insert("url".to_owned(), Value::String(connection.url.to_owned()));
-        legacy_root.insert(
+    fn publish(
+        &self,
+        connection: &HarnessConnection<'_>,
+    ) -> Result<(String, PathBuf), HarnessError> {
+        let mut document = parse_document(&self.path, read_optional(&self.path)?.as_deref())?;
+        let root = root_object(&self.path, &mut document)?;
+        let providers = object_field(&self.path, root, "providers", "providers")?;
+        let legacy = providers.remove(LEGACY_PI_PROVIDER_ID);
+        let mut provider = match providers.remove(PI_PROVIDER_ID).or(legacy) {
+            Some(Value::Object(provider)) => provider,
+            Some(_) => {
+                return Err(HarnessError::InvalidShape {
+                    path: self.path.clone(),
+                    location: "providers.mintpod",
+                });
+            }
+            None => Map::new(),
+        };
+        provider.insert(
+            "baseUrl".to_owned(),
+            Value::String(format!("{}/v1", connection.url.trim_end_matches('/'))),
+        );
+        provider.insert(
+            "api".to_owned(),
+            Value::String("openai-completions".to_owned()),
+        );
+        provider.insert(
             "apiKey".to_owned(),
             Value::String(connection.api_key.to_owned()),
         );
-
-        let mut current = parse_document(&current_path, read_optional(&current_path)?.as_deref())?;
-        merge_current_pi_config(&current_path, &mut current, connection)?;
-
-        write_json(&legacy_path, &legacy)?;
-        if let Err(error) = write_json(&current_path, &current) {
-            restore(&legacy_path, legacy_original.as_deref()).map_err(|source| {
-                HarnessError::Rollback {
-                    path: legacy_path.clone(),
-                    source,
-                }
-            })?;
-            return Err(error);
-        }
-
-        Ok(WiringReceipt {
-            harness: "Pi",
-            command: format!(
+        provider.insert("authHeader".to_owned(), Value::Bool(true));
+        provider.insert(
+            "compat".to_owned(),
+            json!({
+                "supportsDeveloperRole": false,
+                "supportsReasoningEffort": false
+            }),
+        );
+        provider.insert(
+            "models".to_owned(),
+            json!([{
+                "id": connection.preset.ollama_tag,
+                "name": connection.preset.label,
+                "contextWindow": connection.preset.context_length,
+                "maxTokens": connection.preset.max_output_tokens
+            }]),
+        );
+        providers.insert(PI_PROVIDER_ID.to_owned(), Value::Object(provider));
+        write_json(&self.path, &document)?;
+        Ok((
+            format!(
                 "pi --provider {PI_PROVIDER_ID} --model {}",
                 connection.preset.ollama_tag
             ),
-            config_path: current_path,
-        })
+            self.path.clone(),
+        ))
+    }
+
+    fn unpublish(&self) -> Result<(), HarnessError> {
+        remove_owned_entry(&self.path, "providers", PI_PROVIDER_ID)?;
+        remove_owned_entry(&self.path, "providers", LEGACY_PI_PROVIDER_ID)
     }
 }
 
-fn merge_current_pi_config(
-    path: &Path,
-    document: &mut Value,
-    connection: &HarnessConnection<'_>,
-) -> Result<(), HarnessError> {
-    let root = root_object(path, document)?;
-    if !root.contains_key("providers") {
-        root.insert("providers".to_owned(), Value::Object(Map::new()));
+struct OpenCodeAdapter {
+    path: PathBuf,
+}
+
+impl OpenCodeAdapter {
+    fn system() -> Result<Self, HarnessError> {
+        let config =
+            dirs::config_dir().ok_or(HarnessError::ConfigDirectoryUnavailable("OpenCode"))?;
+        Ok(Self {
+            path: config.join("opencode").join("opencode.json"),
+        })
     }
-    let providers = root
-        .get_mut("providers")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| HarnessError::InvalidShape {
-            path: path.to_owned(),
-            location: "providers",
-        })?;
-    let legacy_provider = providers.remove(LEGACY_PI_PROVIDER_ID);
-    if !providers.contains_key(PI_PROVIDER_ID) {
+
+    #[cfg(test)]
+    fn at(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn publish(
+        &self,
+        connection: &HarnessConnection<'_>,
+    ) -> Result<(String, PathBuf), HarnessError> {
+        let mut document = parse_document(&self.path, read_optional(&self.path)?.as_deref())?;
+        let root = root_object(&self.path, &mut document)?;
+        root.entry("$schema".to_owned())
+            .or_insert_with(|| Value::String("https://opencode.ai/config.json".to_owned()));
+        let providers = object_field(&self.path, root, "provider", "provider")?;
         providers.insert(
-            PI_PROVIDER_ID.to_owned(),
-            legacy_provider.unwrap_or_else(|| Value::Object(Map::new())),
+            OPENCODE_PROVIDER_ID.to_owned(),
+            json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "mintPod",
+                "options": {
+                    "baseURL": format!("{}/v1", connection.url.trim_end_matches('/')),
+                    "apiKey": connection.api_key
+                },
+                "models": {
+                    connection.preset.ollama_tag.clone(): {
+                        "name": connection.preset.label,
+                        "limit": {
+                            "context": connection.preset.context_length,
+                            "output": connection.preset.max_output_tokens
+                        }
+                    }
+                }
+            }),
         );
-    } else if let Some(Value::Object(legacy)) = legacy_provider {
-        let current = providers
-            .get_mut(PI_PROVIDER_ID)
-            .and_then(Value::as_object_mut)
+        write_json(&self.path, &document)?;
+        Ok((
+            format!(
+                "opencode --model {OPENCODE_PROVIDER_ID}/{}",
+                connection.preset.ollama_tag
+            ),
+            self.path.clone(),
+        ))
+    }
+
+    fn unpublish(&self) -> Result<(), HarnessError> {
+        remove_owned_entry(&self.path, "provider", OPENCODE_PROVIDER_ID)
+    }
+}
+
+fn aider_command(connection: &HarnessConnection<'_>) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!(
+            "$env:OPENAI_API_BASE='{}/v1'; $env:OPENAI_API_KEY='{}'; aider --model openai/{}",
+            connection.url.trim_end_matches('/'),
+            connection.api_key,
+            connection.preset.ollama_tag
+        )
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!(
+            "OPENAI_API_BASE='{}/v1' OPENAI_API_KEY='{}' aider --model 'openai/{}'",
+            connection.url.trim_end_matches('/'),
+            connection.api_key,
+            connection.preset.ollama_tag
+        )
+    }
+}
+
+fn command_exists(binary: &str) -> bool {
+    let Some(paths) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&paths).any(|directory| {
+        if directory.join(binary).is_file() {
+            return true;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return ["exe", "cmd", "bat"]
+                .iter()
+                .any(|extension| directory.join(format!("{binary}.{extension}")).is_file());
+        }
+        #[cfg(not(target_os = "windows"))]
+        false
+    })
+}
+
+fn remove_owned_entry(path: &Path, section: &'static str, id: &str) -> Result<(), HarnessError> {
+    let Some(contents) = read_optional(path)? else {
+        return Ok(());
+    };
+    let mut document = parse_document(path, Some(&contents))?;
+    let root = root_object(path, &mut document)?;
+    let Some(section_value) = root.get_mut(section) else {
+        return Ok(());
+    };
+    let section_object =
+        section_value
+            .as_object_mut()
             .ok_or_else(|| HarnessError::InvalidShape {
                 path: path.to_owned(),
-                location: "providers.mintpod",
+                location: section,
             })?;
-        for (key, value) in legacy {
-            current.entry(key).or_insert(value);
-        }
+    if section_object.remove(id).is_some() {
+        write_json(path, &document)?;
     }
-    let provider = providers
-        .get_mut(PI_PROVIDER_ID)
-        .and_then(Value::as_object_mut)
+    Ok(())
+}
+
+fn object_field<'a>(
+    path: &Path,
+    root: &'a mut Map<String, Value>,
+    key: &str,
+    location: &'static str,
+) -> Result<&'a mut Map<String, Value>, HarnessError> {
+    root.entry(key.to_owned())
+        .or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut()
         .ok_or_else(|| HarnessError::InvalidShape {
             path: path.to_owned(),
-            location: "providers.mintpod",
-        })?;
-
-    provider.insert(
-        "baseUrl".to_owned(),
-        Value::String(format!("{}/v1", connection.url.trim_end_matches('/'))),
-    );
-    provider.insert(
-        "api".to_owned(),
-        Value::String("openai-completions".to_owned()),
-    );
-    provider.insert(
-        "apiKey".to_owned(),
-        Value::String(connection.api_key.to_owned()),
-    );
-    provider.insert("authHeader".to_owned(), Value::Bool(true));
-    provider.insert(
-        "compat".to_owned(),
-        json!({
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false
-        }),
-    );
-    provider.insert(
-        "models".to_owned(),
-        json!([{
-            "id": connection.preset.ollama_tag,
-            "name": connection.preset.label,
-            "contextWindow": connection.preset.context_length,
-            "maxTokens": connection.preset.max_output_tokens
-        }]),
-    );
-    Ok(())
+            location,
+        })
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, HarnessError> {
@@ -247,6 +429,12 @@ fn root_object<'a>(
 }
 
 fn write_json(path: &Path, document: &Value) -> Result<(), HarnessError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| HarnessError::Write {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
     let mut contents =
         serde_json::to_vec_pretty(document).expect("a JSON value always serializes successfully");
     contents.push(b'\n');
@@ -271,23 +459,6 @@ fn write_json(path: &Path, document: &Value) -> Result<(), HarnessError> {
     })
 }
 
-fn restore(path: &Path, original: Option<&[u8]>) -> Result<(), std::io::Error> {
-    match original {
-        Some(contents) => {
-            let mut file = AtomicWriteFile::open(path)?;
-            secure_permissions(&file)?;
-            file.write_all(contents)?;
-            file.sync_all()?;
-            file.commit()
-        }
-        None => match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        },
-    }
-}
-
 #[cfg(unix)]
 fn secure_permissions(file: &std::fs::File) -> Result<(), std::io::Error> {
     use std::os::unix::fs::PermissionsExt;
@@ -302,6 +473,7 @@ fn secure_permissions(_file: &std::fs::File) -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presets::VerificationStatus;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_dir() -> PathBuf {
@@ -314,126 +486,99 @@ mod tests {
 
     fn preset() -> Preset {
         Preset {
-            id: "coder-7b".to_owned(),
-            label: "Qwen Coder".to_owned(),
-            ollama_tag: "qwen2.5-coder:7b".to_owned(),
+            id: "coder".to_owned(),
+            label: "Coder".to_owned(),
+            ollama_tag: "coder:latest".to_owned(),
             size_gb: 4.7,
             min_vram_gb: 12,
-            gpu_type_ids: vec!["NVIDIA GeForce RTX 4090".to_owned()],
+            gpu_type_ids: vec!["GPU".to_owned()],
             est_cost_per_hr: 0.3,
             tags: vec!["coding".to_owned()],
             context_length: 65_536,
             max_output_tokens: 16_384,
-            verification: crate::presets::VerificationStatus::Candidate,
+            verification: VerificationStatus::Candidate,
+        }
+    }
+
+    fn connection<'a>(model: &'a Preset) -> HarnessConnection<'a> {
+        HarnessConnection {
+            url: crate::proxy::LOCAL_GATEWAY_URL,
+            api_key: "secret",
+            preset: model,
         }
     }
 
     #[test]
-    fn pi_merge_preserves_other_providers_and_unknown_fields() {
+    fn pi_publish_and_unpublish_preserve_unowned_configuration() {
         let directory = test_dir();
+        let path = directory.join("models.json");
         fs::create_dir_all(&directory).unwrap();
         fs::write(
-            directory.join("models.json"),
-            r#"{
-                "customRoot": true,
-                "providers": {
-                    "company": {"baseUrl": "https://internal.example/v1"},
-                    "mintpod": {"customHeader": "preserve"}
-                }
-            }"#,
+            &path,
+            r#"{"customRoot":true,"providers":{"company":{"baseUrl":"https://example"}}}"#,
         )
         .unwrap();
-        let adapter = PiAdapter::at(directory.clone());
+        let adapter = PiAdapter::at(path.clone());
         let model = preset();
 
-        adapter
-            .wire(&HarnessConnection {
-                url: LOCAL_PROXY_URL,
-                api_key: "secret",
-                preset: &model,
-            })
-            .unwrap();
-
-        let current: Value =
-            serde_json::from_slice(&fs::read(directory.join("models.json")).unwrap()).unwrap();
-        assert_eq!(current["customRoot"], true);
+        adapter.publish(&connection(&model)).unwrap();
+        let published: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published["customRoot"], true);
         assert_eq!(
-            current["providers"]["company"]["baseUrl"],
-            "https://internal.example/v1"
+            published["providers"]["company"]["baseUrl"],
+            "https://example"
         );
-        assert_eq!(current["providers"]["mintpod"]["customHeader"], "preserve");
         assert_eq!(
-            current["providers"]["mintpod"]["baseUrl"],
+            published["providers"]["mintpod"]["models"][0]["contextWindow"],
+            65_536
+        );
+
+        adapter.unpublish().unwrap();
+        let unpublished: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(unpublished["providers"].get("mintpod").is_none());
+        assert_eq!(
+            unpublished["providers"]["company"]["baseUrl"],
+            "https://example"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn opencode_publish_uses_the_stable_provider_schema() {
+        let directory = test_dir();
+        let path = directory.join("opencode.json");
+        let adapter = OpenCodeAdapter::at(path.clone());
+        let model = preset();
+
+        adapter.publish(&connection(&model)).unwrap();
+        let document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+
+        assert_eq!(
+            document["provider"]["mintpod"]["npm"],
+            "@ai-sdk/openai-compatible"
+        );
+        assert_eq!(
+            document["provider"]["mintpod"]["options"]["baseURL"],
             "http://127.0.0.1:11435/v1"
         );
         assert_eq!(
-            current["providers"]["mintpod"]["models"][0]["id"],
-            "qwen2.5-coder:7b"
+            document["provider"]["mintpod"]["models"]["coder:latest"]["limit"]["output"],
+            16_384
         );
-        let legacy: Value =
-            serde_json::from_slice(&fs::read(directory.join("local-models.json")).unwrap())
-                .unwrap();
-        assert_eq!(legacy["url"], LOCAL_PROXY_URL);
-        assert_eq!(legacy["apiKey"], "secret");
-
         fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
-    fn pi_merge_migrates_the_legacy_provider_name() {
+    fn invalid_existing_configuration_is_not_overwritten() {
         let directory = test_dir();
+        let path = directory.join("opencode.json");
         fs::create_dir_all(&directory).unwrap();
-        fs::write(
-            directory.join("models.json"),
-            r#"{
-                "providers": {
-                    "podpilot": {"customHeader": "preserve"}
-                }
-            }"#,
-        )
-        .unwrap();
-        let adapter = PiAdapter::at(directory.clone());
+        fs::write(&path, "not json").unwrap();
+        let adapter = OpenCodeAdapter::at(path.clone());
         let model = preset();
 
-        adapter
-            .wire(&HarnessConnection {
-                url: LOCAL_PROXY_URL,
-                api_key: "secret",
-                preset: &model,
-            })
-            .unwrap();
-
-        let current: Value =
-            serde_json::from_slice(&fs::read(directory.join("models.json")).unwrap()).unwrap();
-        assert!(current["providers"].get("podpilot").is_none());
-        assert_eq!(current["providers"]["mintpod"]["customHeader"], "preserve");
-        assert_eq!(
-            current["providers"]["mintpod"]["models"][0]["id"],
-            "qwen2.5-coder:7b"
-        );
-
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn invalid_existing_config_is_never_overwritten() {
-        let directory = test_dir();
-        fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("models.json");
-        fs::write(&path, b"not json").unwrap();
-        let adapter = PiAdapter::at(directory.clone());
-        let model = preset();
-
-        let result = adapter.wire(&HarnessConnection {
-            url: LOCAL_PROXY_URL,
-            api_key: "secret",
-            preset: &model,
-        });
-
-        assert!(matches!(result, Err(HarnessError::InvalidJson { .. })));
-        assert_eq!(fs::read(&path).unwrap(), b"not json");
-        assert!(!directory.join("local-models.json").exists());
-
+        assert!(adapter.publish(&connection(&model)).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
         fs::remove_dir_all(directory).unwrap();
     }
 }
