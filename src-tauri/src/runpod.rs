@@ -22,6 +22,12 @@ pub enum RunpodError {
     EmptyApiKey,
 }
 
+impl RunpodError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::Api { status, .. } if *status == StatusCode::NOT_FOUND)
+    }
+}
+
 #[derive(Clone)]
 pub struct RunpodClient {
     http: Client,
@@ -71,19 +77,13 @@ impl RunpodClient {
         self.send_json(self.get(&pod_detail_path(pod_id))).await
     }
 
-    pub async fn start_pod(&self, pod_id: &str) -> Result<Pod, RunpodError> {
-        self.send_json(self.post(&format!("/pods/{pod_id}/start")))
-            .await
-    }
-
-    pub async fn stop_pod(&self, pod_id: &str) -> Result<Pod, RunpodError> {
-        self.send_json(self.post(&format!("/pods/{pod_id}/stop")))
-            .await
-    }
-
     pub async fn terminate_pod(&self, pod_id: &str) -> Result<(), RunpodError> {
         let response = self.delete(&format!("/pods/{pod_id}")).send().await?;
-        ensure_success(response).await.map(|_| ())
+        match ensure_success(response).await {
+            Ok(_) => Ok(()),
+            Err(error) if error.is_not_found() => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn list_network_volumes(&self) -> Result<Vec<NetworkVolume>, RunpodError> {
@@ -474,6 +474,16 @@ mod tests {
             error_message(r#"{"error":{"message":"insufficient funds"}}"#).as_deref(),
             Some("insufficient funds")
         );
+    }
+
+    #[test]
+    fn recognizes_missing_resources_for_idempotent_cleanup() {
+        let error = RunpodError::Api {
+            status: StatusCode::NOT_FOUND,
+            message: "not found".to_owned(),
+        };
+
+        assert!(error.is_not_found());
     }
 
     #[test]

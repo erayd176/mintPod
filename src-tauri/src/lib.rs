@@ -6,6 +6,7 @@ mod credentials;
 mod fx;
 mod harness;
 mod history;
+mod journal;
 mod lifecycle;
 mod ollama;
 mod orchestrator;
@@ -94,7 +95,10 @@ pub fn run() {
             commands::select_api_key,
             commands::remove_api_key,
             commands::launch_preset,
-            commands::stop_session
+            commands::cancel_launch,
+            commands::stop_session,
+            commands::recovery_status,
+            commands::cleanup_recovery
         ])
         .run(tauri::generate_context!())
         .expect("failed to run mintPod");

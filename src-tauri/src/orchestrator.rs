@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     ollama::{OllamaClient, OllamaError, PullProgress},
@@ -71,10 +72,32 @@ pub enum LaunchError {
     PodTimeout,
     #[error("RunPod did not return a cost for the running pod")]
     MissingCost,
+    #[error("launch cancelled")]
+    Cancelled,
+    #[error("could not persist pod ownership: {0}")]
+    Persistence(String),
 }
 
 pub struct LaunchOrchestrator {
     runpod: RunpodClient,
+}
+
+pub struct LaunchSpec {
+    pub pod_name: String,
+    pub preset: Preset,
+    pub network_volume: crate::runpod::NetworkVolume,
+    pub remote_token: String,
+    pub context_length: u32,
+    pub cancellation: CancellationToken,
+}
+
+struct PendingSession {
+    pod_id: String,
+    preset: Preset,
+    requested_data_center_id: String,
+    started_at_epoch_ms: u64,
+    remote_token: String,
+    cancellation: CancellationToken,
 }
 
 impl LaunchOrchestrator {
@@ -82,91 +105,79 @@ impl LaunchOrchestrator {
         Self { runpod }
     }
 
-    pub async fn launch(
+    pub async fn launch<F>(
         &self,
-        preset: Preset,
-        network_volume: crate::runpod::NetworkVolume,
-        remote_token: String,
-        context_length: u32,
+        spec: LaunchSpec,
+        on_pod_created: F,
         events: UnboundedSender<LaunchEvent>,
-    ) -> Result<RunningSession, LaunchError> {
+    ) -> Result<RunningSession, LaunchError>
+    where
+        F: FnOnce(&crate::runpod::Pod) -> Result<(), String>,
+    {
         send_stage(
             &events,
             LaunchStage::RequestingPod,
             "Requesting GPU capacity",
         );
         let request = CreatePodRequest::ollama(
-            format!("mintpod-{}", preset.id),
-            preset.gpu_type_ids.clone(),
-            &network_volume,
-            preset.volume_size_gb(),
-            &remote_token,
-            context_length,
+            spec.pod_name,
+            spec.preset.gpu_type_ids.clone(),
+            &spec.network_volume,
+            spec.preset.volume_size_gb(),
+            &spec.remote_token,
+            spec.context_length,
         );
         let started_at_epoch_ms = now_epoch_ms();
         let pod = self.runpod.create_pod(&request).await?;
+        if let Err(error) = on_pod_created(&pod) {
+            let cleanup = self.runpod.terminate_pod(&pod.id).await.err();
+            let message = match cleanup {
+                Some(cleanup) => format!("{error}; immediate cleanup failed: {cleanup}"),
+                None => error,
+            };
+            return Err(LaunchError::Persistence(message));
+        }
         let pod_id = pod.id.clone();
-        let data_center_id = network_volume.data_center_id;
+        let data_center_id = spec.network_volume.data_center_id;
+        if spec.cancellation.is_cancelled() {
+            return Err(LaunchError::Cancelled);
+        }
 
-        let result = self
-            .finish_launch(
-                pod_id.clone(),
-                preset,
-                data_center_id,
+        self.finish_launch(
+            PendingSession {
+                pod_id,
+                preset: spec.preset,
+                requested_data_center_id: data_center_id,
                 started_at_epoch_ms,
-                remote_token,
-                events,
-            )
-            .await;
-        if result.is_err() {
-            let _ = self.runpod.stop_pod(&pod_id).await;
-            let _ = self.runpod.terminate_pod(&pod_id).await;
-        }
-        result
-    }
-
-    pub async fn resume(
-        &self,
-        pod_id: String,
-        preset: Preset,
-        data_center_id: String,
-        remote_token: String,
-        events: UnboundedSender<LaunchEvent>,
-    ) -> Result<RunningSession, LaunchError> {
-        send_stage(&events, LaunchStage::RequestingPod, "Resuming stopped pod");
-        self.runpod.start_pod(&pod_id).await?;
-        let result = self
-            .finish_launch(
-                pod_id.clone(),
-                preset,
-                data_center_id,
-                now_epoch_ms(),
-                remote_token,
-                events,
-            )
-            .await;
-        if result.is_err() {
-            let _ = self.runpod.stop_pod(&pod_id).await;
-            let _ = self.runpod.terminate_pod(&pod_id).await;
-        }
-        result
+                remote_token: spec.remote_token,
+                cancellation: spec.cancellation,
+            },
+            events,
+        )
+        .await
     }
 
     async fn finish_launch(
         &self,
-        pod_id: String,
-        preset: Preset,
-        requested_data_center_id: String,
-        started_at_epoch_ms: u64,
-        remote_token: String,
+        pending: PendingSession,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
+        let PendingSession {
+            pod_id,
+            preset,
+            requested_data_center_id,
+            started_at_epoch_ms,
+            remote_token,
+            cancellation,
+        } = pending;
         send_stage(
             &events,
             LaunchStage::BootingContainer,
             "Waiting for container",
         );
-        let pod = self.wait_for_running(&pod_id, &events).await?;
+        let pod = self
+            .wait_for_running(&pod_id, &cancellation, &events)
+            .await?;
         let gpu_name = pod
             .allocated_gpu()
             .unwrap_or("GPU details unavailable")
@@ -186,7 +197,10 @@ impl LaunchOrchestrator {
         let remote_url = format!("https://{pod_id}-8000.proxy.runpod.net");
         let ollama = OllamaClient::new(&remote_url, &remote_token)?;
 
-        ollama.wait_until_healthy(OLLAMA_HEALTH_ATTEMPTS).await?;
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(LaunchError::Cancelled),
+            result = ollama.wait_until_healthy(OLLAMA_HEALTH_ATTEMPTS) => result?,
+        }
 
         send_stage(
             &events,
@@ -211,13 +225,21 @@ impl LaunchOrchestrator {
                     });
                 }
             });
-            let pull_result = ollama.pull_model(&preset.ollama_tag, pull_tx).await;
+            let pull_result = tokio::select! {
+                _ = cancellation.cancelled() => Err(LaunchError::Cancelled),
+                result = ollama.pull_model(&preset.ollama_tag, pull_tx) => {
+                    result.map_err(LaunchError::from)
+                },
+            };
             let _ = forward.await;
             pull_result?;
         }
 
         send_stage(&events, LaunchStage::WarmingUp, "Loading model into VRAM");
-        ollama.warm_model(&preset.ollama_tag).await?;
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(LaunchError::Cancelled),
+            result = ollama.warm_model(&preset.ollama_tag) => result?,
+        }
 
         Ok(RunningSession {
             pod_id,
@@ -236,12 +258,17 @@ impl LaunchOrchestrator {
     async fn wait_for_running(
         &self,
         pod_id: &str,
+        cancellation: &CancellationToken,
         events: &UnboundedSender<LaunchEvent>,
     ) -> Result<crate::runpod::Pod, LaunchError> {
         let mut previous_status = None;
         let mut consecutive_failures = 0;
         for _ in 0..POD_READY_ATTEMPTS {
-            let pod = match self.runpod.get_pod(pod_id).await {
+            let pod_result = tokio::select! {
+                _ = cancellation.cancelled() => return Err(LaunchError::Cancelled),
+                result = self.runpod.get_pod(pod_id) => result,
+            };
+            let pod = match pod_result {
                 Ok(pod) => {
                     consecutive_failures = 0;
                     pod
@@ -256,7 +283,7 @@ impl LaunchOrchestrator {
                         LaunchStage::BootingContainer,
                         "RunPod status unavailable; retrying",
                     );
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    cancellable_sleep(cancellation, Duration::from_secs(2)).await?;
                     continue;
                 }
             };
@@ -272,9 +299,19 @@ impl LaunchOrchestrator {
             if pod.is_running() {
                 return Ok(pod);
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            cancellable_sleep(cancellation, Duration::from_secs(2)).await?;
         }
         Err(LaunchError::PodTimeout)
+    }
+}
+
+async fn cancellable_sleep(
+    cancellation: &CancellationToken,
+    duration: Duration,
+) -> Result<(), LaunchError> {
+    tokio::select! {
+        _ = cancellation.cancelled() => Err(LaunchError::Cancelled),
+        _ = tokio::time::sleep(duration) => Ok(()),
     }
 }
 

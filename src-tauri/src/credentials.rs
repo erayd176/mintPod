@@ -15,6 +15,7 @@ const LEGACY_SERVICE: &str = "dev.podpilot.desktop";
 const LEGACY_ID: &str = "legacy";
 const LEGACY_USER: &str = "runpod-api-key";
 const USER_PREFIX: &str = "runpod-api-key-";
+const RUNTIME_USER_PREFIX: &str = "runtime-token-";
 const MAX_LABEL_CHARS: usize = 32;
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +76,43 @@ impl CredentialStore {
             return Ok(None);
         };
         read_entry(&active_id).map(Some)
+    }
+
+    pub fn read_active(
+        path: &Path,
+    ) -> Result<Option<(CredentialProfile, String)>, CredentialError> {
+        let index = load_with_legacy(path)?;
+        let Some(active_id) = index.active_id.as_deref() else {
+            return Ok(None);
+        };
+        let profile = require_profile(&index, active_id)?;
+        Ok(Some((
+            CredentialProfile {
+                id: profile.id.clone(),
+                label: profile.label.clone(),
+                active: true,
+            },
+            read_entry(active_id)?,
+        )))
+    }
+
+    pub fn read_profile_key(path: &Path, profile_id: &str) -> Result<String, CredentialError> {
+        let index = load_with_legacy(path)?;
+        require_profile(&index, profile_id)?;
+        read_entry(profile_id)
+    }
+
+    pub fn store_runtime_token(launch_id: &str, token: &str) -> Result<(), CredentialError> {
+        runtime_entry(launch_id)?
+            .set_password(normalize_key(token)?)
+            .map_err(keychain_error)
+    }
+
+    pub fn delete_runtime_token(launch_id: &str) -> Result<(), CredentialError> {
+        match runtime_entry(launch_id)?.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => Err(keychain_error(error)),
+        }
     }
 
     pub fn add_profile(
@@ -353,6 +391,10 @@ fn entry(profile_id: &str) -> Result<Entry, CredentialError> {
 
 fn legacy_entry(profile_id: &str) -> Result<Entry, CredentialError> {
     service_entry(LEGACY_SERVICE, profile_id)
+}
+
+fn runtime_entry(launch_id: &str) -> Result<Entry, CredentialError> {
+    Entry::new(SERVICE, &format!("{RUNTIME_USER_PREFIX}{launch_id}")).map_err(keychain_error)
 }
 
 fn service_entry(service: &str, profile_id: &str) -> Result<Entry, CredentialError> {

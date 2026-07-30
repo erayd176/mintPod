@@ -8,17 +8,17 @@ use crate::{
     fx,
     harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
     history::{self, SessionHistoryEntry},
+    journal::{JournalStage, NewSessionJournal, SessionJournal, SessionJournalStore},
     lifecycle::{BudgetTracker, LaunchBudget, StopReason},
-    orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
+    orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchSpec, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
     proxy::{LocalProxy, generate_token},
     runpod::{Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
-    state::{ActiveSession, AppState, ExitAction, GraceSession, SessionView},
+    state::{ActiveSession, AppState, ExitAction, SessionView},
 };
 
 const HOBBY_RANGE_WARNING: &str = "outside default hobby range, continue anyway?";
-const TERMINATION_GRACE: Duration = Duration::from_secs(5 * 60);
 const COST_RESYNC_INTERVAL_SECONDS: u64 = 30;
 const DEFAULT_CONTEXT_LENGTH: u32 = 65_536;
 
@@ -63,6 +63,20 @@ pub struct CacheSummary {
 pub struct SessionStoppedEvent {
     reason: StopReason,
     history_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryView {
+    launch_id: String,
+    pod_id: String,
+    pod_name: String,
+    preset_id: String,
+    stage: JournalStage,
+    created_at_epoch_ms: u64,
+    remote_status: String,
+    cost_per_hr_usd: Option<f64>,
+    last_error: Option<String>,
 }
 
 #[tauri::command]
@@ -278,15 +292,12 @@ pub async fn remove_api_key(profile_id: String, state: State<'_, AppState>) -> R
 }
 
 async fn prepare_credential_change(state: &State<'_, AppState>) -> Result<(), String> {
-    let grace = state
-        .begin_credential_change()
+    state
+        .require_idle()
         .await
         .map_err(|error| error.to_string())?;
-    if let Some(grace) = grace
-        && let Err(error) = terminate_with_retry(&grace.runpod, &grace.view.session.pod_id).await
-    {
-        state.set_grace(grace).await;
-        return Err(error);
+    if state.session_journal_path.exists() {
+        return Err("clean up the recovered mintPod session before changing API keys".to_owned());
     }
     Ok(())
 }
@@ -309,7 +320,7 @@ pub async fn launch_preset(
     state: State<'_, AppState>,
 ) -> Result<SessionView, String> {
     let budget = budget.validate().map_err(|error| error.to_string())?;
-    let previous = state
+    let cancellation = state
         .begin_launch()
         .await
         .map_err(|error| error.to_string())?;
@@ -317,7 +328,15 @@ pub async fn launch_preset(
         .settings()
         .map_err(|_| "settings lock is poisoned".to_owned())?
         .idle_timeout_minutes;
-    let result = launch_preset_inner(&preset_id, previous, &app, &state).await;
+    let result = launch_preset_inner(
+        &preset_id,
+        budget,
+        idle_timeout_minutes,
+        cancellation,
+        &app,
+        &state,
+    )
+    .await;
     match result {
         Ok((session, wiring, proxy, runpod, usd_to_eur)) => {
             let cost_per_hr_eur = session.cost_per_hr_usd * usd_to_eur;
@@ -333,15 +352,21 @@ pub async fn launch_preset(
             Ok(view)
         }
         Err(error) => {
+            let cleanup_error = cleanup_recorded_session(&state, false).await.err();
             state.fail_launch().await;
-            Err(error)
+            Err(match cleanup_error {
+                Some(cleanup) => format!("{error}; cleanup still required: {cleanup}"),
+                None => error,
+            })
         }
     }
 }
 
 async fn launch_preset_inner(
     preset_id: &str,
-    previous: Option<GraceSession>,
+    budget: LaunchBudget,
+    idle_timeout_minutes: u16,
+    cancellation: tokio_util::sync::CancellationToken,
     app: &AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<(RunningSession, WiringReceipt, LocalProxy, RunpodClient, f64), String> {
@@ -355,10 +380,28 @@ async fn launch_preset_inner(
         .map_err(|_| "settings lock is poisoned".to_owned())?
         .storage_region
         .clone();
-    let api_key = CredentialStore::read_active_key(&state.credential_index_path)
+    let (profile, api_key) = CredentialStore::read_active(&state.credential_index_path)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "RunPod API key is not configured".to_owned())?;
     let runpod = RunpodClient::new(api_key).map_err(|error| error.to_string())?;
+    let mut journal = SessionJournalStore::prepare(
+        &state.session_journal_path,
+        &state.install_id,
+        NewSessionJournal {
+            credential_profile_id: profile.id,
+            preset_id: preset.id.clone(),
+            data_center_id: region.clone(),
+            budget,
+            idle_timeout_minutes,
+            created_at_epoch_ms: now_epoch_ms(),
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let runtime_token = generate_token().map_err(|error| error.to_string())?;
+    if let Err(error) = CredentialStore::store_runtime_token(&journal.launch_id, &runtime_token) {
+        let _ = SessionJournalStore::clear(&state.session_journal_path);
+        return Err(error.to_string());
+    }
     let fx_path = state.fx_rate_path.clone();
     let fx_task = tokio::spawn(async move { fx::usd_to_eur(&fx_path).await });
 
@@ -370,82 +413,57 @@ async fn launch_preset_inner(
         }
     });
     let orchestrator = LaunchOrchestrator::new(runpod.clone());
-    let session = match previous {
-        Some(grace)
-            if grace.view.session.preset_id == preset.id
-                && now_epoch_ms().saturating_sub(grace.stopped_at_epoch_ms)
-                    < TERMINATION_GRACE.as_millis() as u64 =>
-        {
-            orchestrator
-                .resume(
-                    grace.view.session.pod_id,
-                    preset.clone(),
-                    region.clone(),
-                    grace.view.session.remote_token,
-                    events_tx,
-                )
-                .await
-                .map_err(|error| error.to_string())?
-        }
-        Some(grace) => {
-            terminate_with_retry(&grace.runpod, &grace.view.session.pod_id).await?;
-            emit_stage(
-                app,
-                LaunchStage::RequestingPod,
-                "Preparing persistent model volume",
-            )?;
-            let volume = runpod
-                .ensure_model_volume(&preset.id, preset.volume_size_gb(), &region)
-                .await
-                .map_err(|error| error.to_string())?;
-            orchestrator
-                .launch(
-                    preset.clone(),
-                    volume,
-                    generate_token().map_err(|error| error.to_string())?,
-                    DEFAULT_CONTEXT_LENGTH,
-                    events_tx,
-                )
-                .await
-                .map_err(|error| error.to_string())?
-        }
-        None => {
-            emit_stage(
-                app,
-                LaunchStage::RequestingPod,
-                "Preparing persistent model volume",
-            )?;
-            let volume = runpod
-                .ensure_model_volume(&preset.id, preset.volume_size_gb(), &region)
-                .await
-                .map_err(|error| error.to_string())?;
-            orchestrator
-                .launch(
-                    preset.clone(),
-                    volume,
-                    generate_token().map_err(|error| error.to_string())?,
-                    DEFAULT_CONTEXT_LENGTH,
-                    events_tx,
-                )
-                .await
-                .map_err(|error| error.to_string())?
-        }
-    };
+    emit_stage(
+        app,
+        LaunchStage::RequestingPod,
+        "Preparing persistent model volume",
+    )?;
+    let volume = runpod
+        .ensure_model_volume(&preset.id, preset.volume_size_gb(), &region)
+        .await
+        .map_err(|error| error.to_string())?;
+    journal.volume_id = Some(volume.id.clone());
+    journal.stage = JournalStage::VolumeReady;
+    SessionJournalStore::save(&state.session_journal_path, &journal)
+        .map_err(|error| error.to_string())?;
+    if cancellation.is_cancelled() {
+        return Err("launch cancelled".to_owned());
+    }
+    let pod_name = journal.pod_name.clone();
+    let journal_path = state.session_journal_path.clone();
+    journal.stage = JournalStage::PodRequested;
+    SessionJournalStore::save(&journal_path, &journal).map_err(|error| error.to_string())?;
+    let session = orchestrator
+        .launch(
+            LaunchSpec {
+                pod_name,
+                preset: preset.clone(),
+                network_volume: volume,
+                remote_token: runtime_token,
+                context_length: DEFAULT_CONTEXT_LENGTH,
+                cancellation,
+            },
+            |pod| {
+                journal.pod_id = Some(pod.id.clone());
+                journal.stage = JournalStage::PodCreated;
+                SessionJournalStore::save(&journal_path, &journal)
+                    .map_err(|error| error.to_string())
+            },
+            events_tx,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
     let _ = forward.await;
     let usd_to_eur = fx_task.await.unwrap_or(1.0);
 
     let proxy = match LocalProxy::start(&session.remote_url, &session.remote_token).await {
         Ok(proxy) => proxy,
-        Err(error) => {
-            cleanup_failed_launch(&runpod, &session.pod_id).await;
-            return Err(error.to_string());
-        }
+        Err(error) => return Err(error.to_string()),
     };
     let adapter = match PiAdapter::system() {
         Ok(adapter) => adapter,
         Err(error) => {
             proxy.shutdown().await;
-            cleanup_failed_launch(&runpod, &session.pod_id).await;
             return Err(error.to_string());
         }
     };
@@ -457,7 +475,6 @@ async fn launch_preset_inner(
         Ok(receipt) => receipt,
         Err(error) => {
             proxy.shutdown().await;
-            cleanup_failed_launch(&runpod, &session.pod_id).await;
             return Err(error.to_string());
         }
     };
@@ -471,8 +488,77 @@ async fn launch_preset_inner(
             skipped: false,
         },
     );
+    journal.stage = JournalStage::Ready;
+    journal.last_error = None;
+    SessionJournalStore::save(&state.session_journal_path, &journal)
+        .map_err(|error| error.to_string())?;
 
     Ok((session, wiring, proxy, runpod, usd_to_eur))
+}
+
+#[tauri::command]
+pub async fn cancel_launch(state: State<'_, AppState>) -> Result<(), String> {
+    if state.cancel_launch().await {
+        Ok(())
+    } else {
+        Err("no launch is active".to_owned())
+    }
+}
+
+#[tauri::command]
+pub async fn recovery_status(state: State<'_, AppState>) -> Result<Option<RecoveryView>, String> {
+    state
+        .require_idle()
+        .await
+        .map_err(|error| error.to_string())?;
+    let Some(mut journal) = SessionJournalStore::load(&state.session_journal_path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let runpod = runpod_for_journal(&state, &journal)?;
+    let Some(pod) = resolve_journal_pod(&runpod, &mut journal, &state.session_journal_path).await?
+    else {
+        if matches!(
+            journal.stage,
+            JournalStage::PodRequested | JournalStage::CleanupPending
+        ) {
+            return Ok(Some(RecoveryView {
+                launch_id: journal.launch_id,
+                pod_id: String::new(),
+                pod_name: journal.pod_name,
+                preset_id: journal.preset_id,
+                stage: journal.stage,
+                created_at_epoch_ms: journal.created_at_epoch_ms,
+                remote_status: "NOT_FOUND".to_owned(),
+                cost_per_hr_usd: None,
+                last_error: journal.last_error,
+            }));
+        }
+        clear_local_ownership(&state, &journal)?;
+        return Ok(None);
+    };
+    let cost_per_hr_usd = pod.effective_cost_per_hr();
+    Ok(Some(RecoveryView {
+        launch_id: journal.launch_id,
+        pod_id: pod.id,
+        pod_name: journal.pod_name,
+        preset_id: journal.preset_id,
+        stage: journal.stage,
+        created_at_epoch_ms: journal.created_at_epoch_ms,
+        remote_status: pod.desired_status.unwrap_or_else(|| "UNKNOWN".to_owned()),
+        cost_per_hr_usd,
+        last_error: journal.last_error,
+    }))
+}
+
+#[tauri::command]
+pub async fn cleanup_recovery(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .require_idle()
+        .await
+        .map_err(|error| error.to_string())?;
+    cleanup_recorded_session(&state, true).await
 }
 
 #[tauri::command]
@@ -527,7 +613,7 @@ fn spawn_session_monitor(app: AppHandle, view: SessionView, runpod: RunpodClient
                     }
                 }
             }
-            if ticks % COST_RESYNC_INTERVAL_SECONDS == 0 && resync.is_none() {
+            if ticks.is_multiple_of(COST_RESYNC_INTERVAL_SECONDS) && resync.is_none() {
                 let resync_runpod = runpod.clone();
                 let resync_pod_id = pod_id.clone();
                 resync = Some(tokio::spawn(async move {
@@ -551,9 +637,7 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
     let Some(active) = state.take_running(pod_id).await else {
         return Ok(());
     };
-    if reason != StopReason::RemoteStopped
-        && let Err(error) = stop_with_retry(&active.runpod, pod_id).await
-    {
+    if let Err(error) = terminate_with_retry(&active.runpod, pod_id).await {
         state.restore_running(active).await;
         return Err(error);
     }
@@ -561,7 +645,7 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
     let ActiveSession {
         view,
         proxy,
-        runpod,
+        runpod: _,
         telemetry,
     } = active;
     proxy.shutdown().await;
@@ -580,49 +664,20 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
     )
     .err()
     .map(|error| error.to_string());
-    state
-        .set_grace(GraceSession {
-            view,
-            runpod: runpod.clone(),
-            stopped_at_epoch_ms: now,
-        })
-        .await;
+    if let Ok(Some(journal)) = SessionJournalStore::load(&state.session_journal_path) {
+        let _ = CredentialStore::delete_runtime_token(&journal.launch_id);
+    }
+    let journal_cleanup_error = SessionJournalStore::clear(&state.session_journal_path)
+        .err()
+        .map(|error| error.to_string());
     let _ = app.emit(
         "session-stopped",
         SessionStoppedEvent {
             reason,
-            history_error,
+            history_error: history_error.or(journal_cleanup_error),
         },
     );
-    schedule_termination(app.clone(), pod_id.to_owned(), runpod);
     Ok(())
-}
-
-fn schedule_termination(app: AppHandle, pod_id: String, runpod: RunpodClient) {
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(TERMINATION_GRACE).await;
-        let state = app.state::<AppState>();
-        if state.take_grace(&pod_id).await.is_none() {
-            return;
-        }
-        if let Err(error) = terminate_with_retry(&runpod, &pod_id).await {
-            let _ = app.emit("session-cleanup-error", error);
-        }
-    });
-}
-
-async fn stop_with_retry(runpod: &RunpodClient, pod_id: &str) -> Result<(), String> {
-    let mut last_error = None;
-    for attempt in 0..3 {
-        match runpod.stop_pod(pod_id).await {
-            Ok(_) => return Ok(()),
-            Err(error) => last_error = Some(error.to_string()),
-        }
-        if attempt < 2 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    }
-    Err(last_error.unwrap_or_else(|| "RunPod stop failed".to_owned()))
 }
 
 async fn terminate_with_retry(runpod: &RunpodClient, pod_id: &str) -> Result<(), String> {
@@ -639,9 +694,83 @@ async fn terminate_with_retry(runpod: &RunpodClient, pod_id: &str) -> Result<(),
     Err(last_error.unwrap_or_else(|| "RunPod termination failed".to_owned()))
 }
 
-async fn cleanup_failed_launch(runpod: &RunpodClient, pod_id: &str) {
-    let _ = stop_with_retry(runpod, pod_id).await;
-    let _ = terminate_with_retry(runpod, pod_id).await;
+async fn cleanup_recorded_session(
+    state: &AppState,
+    confirm_absent_pod: bool,
+) -> Result<(), String> {
+    let Some(mut journal) = SessionJournalStore::load(&state.session_journal_path)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    let runpod = runpod_for_journal(state, &journal)?;
+    let creation_outcome_uncertain = journal.pod_id.is_none()
+        && matches!(
+            journal.stage,
+            JournalStage::PodRequested | JournalStage::CleanupPending
+        );
+    journal.stage = JournalStage::CleanupPending;
+    SessionJournalStore::save(&state.session_journal_path, &journal)
+        .map_err(|error| error.to_string())?;
+    match resolve_journal_pod(&runpod, &mut journal, &state.session_journal_path).await? {
+        Some(pod) => {
+            if let Err(error) = terminate_with_retry(&runpod, &pod.id).await {
+                journal.last_error = Some(error.clone());
+                let _ = SessionJournalStore::save(&state.session_journal_path, &journal);
+                return Err(error);
+            }
+        }
+        None if creation_outcome_uncertain && !confirm_absent_pod => {
+            let error =
+                "pod creation outcome is uncertain; use recovery cleanup to confirm no pod exists"
+                    .to_owned();
+            journal.last_error = Some(error.clone());
+            let _ = SessionJournalStore::save(&state.session_journal_path, &journal);
+            return Err(error);
+        }
+        None => {}
+    }
+    clear_local_ownership(state, &journal)
+}
+
+fn runpod_for_journal(state: &AppState, journal: &SessionJournal) -> Result<RunpodClient, String> {
+    let api_key = CredentialStore::read_profile_key(
+        &state.credential_index_path,
+        &journal.credential_profile_id,
+    )
+    .map_err(|error| error.to_string())?;
+    RunpodClient::new(api_key).map_err(|error| error.to_string())
+}
+
+async fn resolve_journal_pod(
+    runpod: &RunpodClient,
+    journal: &mut SessionJournal,
+    journal_path: &std::path::Path,
+) -> Result<Option<Pod>, String> {
+    if let Some(pod_id) = journal.pod_id.as_deref() {
+        match runpod.get_pod(pod_id).await {
+            Ok(pod) => return Ok(Some(pod)),
+            Err(error) if error.is_not_found() => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let pod = runpod
+        .list_pods()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|pod| pod.name == journal.pod_name);
+    if let Some(pod) = &pod {
+        journal.pod_id = Some(pod.id.clone());
+        journal.stage = JournalStage::PodCreated;
+        SessionJournalStore::save(journal_path, journal).map_err(|error| error.to_string())?;
+    }
+    Ok(pod)
+}
+
+fn clear_local_ownership(state: &AppState, journal: &SessionJournal) -> Result<(), String> {
+    CredentialStore::delete_runtime_token(&journal.launch_id).map_err(|error| error.to_string())?;
+    SessionJournalStore::clear(&state.session_journal_path).map_err(|error| error.to_string())
 }
 
 fn emit_stage(app: &AppHandle, stage: LaunchStage, detail: &str) -> Result<(), String> {
@@ -672,17 +801,9 @@ pub(crate) async fn shutdown_for_exit(app: AppHandle) -> bool {
                 app.exit(0);
                 return true;
             }
-            ExitAction::WaitForLaunch => tokio::time::sleep(Duration::from_secs(1)).await,
+            ExitAction::CancelLaunch => tokio::time::sleep(Duration::from_millis(250)).await,
             ExitAction::Stop(pod_id) => {
                 if let Err(error) = finalize_session(&app, &pod_id, StopReason::Manual).await {
-                    let _ = app.emit("session-cleanup-error", error);
-                    return false;
-                }
-            }
-            ExitAction::Terminate(grace) => {
-                if let Err(error) =
-                    terminate_with_retry(&grace.runpod, &grace.view.session.pod_id).await
-                {
                     let _ = app.emit("session-cleanup-error", error);
                     return false;
                 }

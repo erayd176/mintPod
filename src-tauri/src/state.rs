@@ -4,9 +4,11 @@ use std::{
 };
 
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     harness::WiringReceipt,
+    journal::{JournalError, load_or_create_install_id},
     lifecycle::{LaunchBudget, SessionTelemetry},
     orchestrator::RunningSession,
     presets::{PresetCatalog, PresetError},
@@ -34,29 +36,20 @@ pub struct ActiveSession {
 }
 
 #[derive(Clone)]
-pub struct GraceSession {
-    pub view: SessionView,
-    pub runpod: RunpodClient,
-    pub stopped_at_epoch_ms: u64,
-}
-
-#[derive(Clone)]
 pub struct SessionSample {
     pub last_request_epoch_ms: u64,
 }
 
 pub enum RuntimeState {
     Idle,
-    Launching,
+    Launching(CancellationToken),
     Running(Box<ActiveSession>),
-    Grace(Box<GraceSession>),
 }
 
 pub enum ExitAction {
     Exit,
-    WaitForLaunch,
+    CancelLaunch,
     Stop(String),
-    Terminate(Box<GraceSession>),
 }
 
 pub struct AppState {
@@ -68,6 +61,8 @@ pub struct AppState {
     pub credential_index_path: PathBuf,
     pub history_path: PathBuf,
     pub fx_rate_path: PathBuf,
+    pub session_journal_path: PathBuf,
+    pub install_id: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,8 +71,12 @@ pub enum StateError {
     Presets(#[from] PresetError),
     #[error(transparent)]
     Settings(#[from] SettingsError),
+    #[error(transparent)]
+    Journal(#[from] JournalError),
     #[error("a launch or session is already active")]
     AlreadyActive,
+    #[error("a previous mintPod session needs recovery before launching again")]
+    RecoveryRequired,
 }
 
 impl AppState {
@@ -87,6 +86,8 @@ impl AppState {
         let credential_index_path = config_dir.join("api-keys.json");
         let history_path = config_dir.join("session-history.json");
         let fx_rate_path = config_dir.join("fx-rate.json");
+        let session_journal_path = config_dir.join("active-session.json");
+        let install_id = load_or_create_install_id(&config_dir.join("install-id"))?;
         let presets = PresetCatalog::load(&user_presets_path)?;
         let settings = SettingsStore::load(&settings_path)?;
         Ok(Self {
@@ -98,6 +99,8 @@ impl AppState {
             credential_index_path,
             history_path,
             fx_rate_path,
+            session_journal_path,
+            install_id,
         })
     }
 
@@ -129,17 +132,17 @@ impl AppState {
         self.settings.write()
     }
 
-    pub async fn begin_launch(&self) -> Result<Option<GraceSession>, StateError> {
+    pub async fn begin_launch(&self) -> Result<CancellationToken, StateError> {
         let mut runtime = self.runtime.lock().await;
-        let previous = std::mem::replace(&mut *runtime, RuntimeState::Launching);
-        match previous {
-            RuntimeState::Idle => Ok(None),
-            RuntimeState::Grace(grace) => Ok(Some(*grace)),
-            active => {
-                *runtime = active;
-                Err(StateError::AlreadyActive)
-            }
+        if !matches!(*runtime, RuntimeState::Idle) {
+            return Err(StateError::AlreadyActive);
         }
+        if self.session_journal_path.exists() {
+            return Err(StateError::RecoveryRequired);
+        }
+        let cancellation = CancellationToken::new();
+        *runtime = RuntimeState::Launching(cancellation.clone());
+        Ok(cancellation)
     }
 
     pub async fn require_idle(&self) -> Result<(), StateError> {
@@ -147,19 +150,6 @@ impl AppState {
             Ok(())
         } else {
             Err(StateError::AlreadyActive)
-        }
-    }
-
-    pub async fn begin_credential_change(&self) -> Result<Option<GraceSession>, StateError> {
-        let mut runtime = self.runtime.lock().await;
-        let previous = std::mem::replace(&mut *runtime, RuntimeState::Idle);
-        match previous {
-            RuntimeState::Idle => Ok(None),
-            RuntimeState::Grace(grace) => Ok(Some(*grace)),
-            active => {
-                *runtime = active;
-                Err(StateError::AlreadyActive)
-            }
         }
     }
 
@@ -226,22 +216,6 @@ impl AppState {
         *self.runtime.lock().await = RuntimeState::Running(Box::new(active));
     }
 
-    pub async fn set_grace(&self, grace: GraceSession) {
-        *self.runtime.lock().await = RuntimeState::Grace(Box::new(grace));
-    }
-
-    pub async fn take_grace(&self, pod_id: &str) -> Option<GraceSession> {
-        let mut runtime = self.runtime.lock().await;
-        let previous = std::mem::replace(&mut *runtime, RuntimeState::Idle);
-        match previous {
-            RuntimeState::Grace(grace) if grace.view.session.pod_id == pod_id => Some(*grace),
-            other => {
-                *runtime = other;
-                None
-            }
-        }
-    }
-
     pub async fn running_pod_id(&self) -> Option<String> {
         let runtime = self.runtime.lock().await;
         match &*runtime {
@@ -251,18 +225,23 @@ impl AppState {
     }
 
     pub async fn prepare_exit(&self) -> ExitAction {
-        let mut runtime = self.runtime.lock().await;
+        let runtime = self.runtime.lock().await;
         match &*runtime {
             RuntimeState::Idle => ExitAction::Exit,
-            RuntimeState::Launching => ExitAction::WaitForLaunch,
-            RuntimeState::Running(active) => ExitAction::Stop(active.view.session.pod_id.clone()),
-            RuntimeState::Grace(_) => {
-                let previous = std::mem::replace(&mut *runtime, RuntimeState::Idle);
-                let RuntimeState::Grace(grace) = previous else {
-                    unreachable!("runtime state was checked while locked")
-                };
-                ExitAction::Terminate(grace)
+            RuntimeState::Launching(cancellation) => {
+                cancellation.cancel();
+                ExitAction::CancelLaunch
             }
+            RuntimeState::Running(active) => ExitAction::Stop(active.view.session.pod_id.clone()),
         }
+    }
+
+    pub async fn cancel_launch(&self) -> bool {
+        let runtime = self.runtime.lock().await;
+        let RuntimeState::Launching(cancellation) = &*runtime else {
+            return false;
+        };
+        cancellation.cancel();
+        true
     }
 }
