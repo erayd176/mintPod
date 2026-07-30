@@ -44,8 +44,12 @@ func TestGatewayRequiresExactBearerToken(t *testing.T) {
 
 func TestGatewayStripsCredentialBeforeOllama(t *testing.T) {
 	authorization := make(chan string, 1)
+	host := make(chan string, 1)
+	origin := make(chan string, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		authorization <- request.Header.Get("Authorization")
+		host <- request.Host
+		origin <- request.Header.Get("Origin")
 		_, _ = io.WriteString(response, "ok")
 	}))
 	defer upstream.Close()
@@ -55,6 +59,7 @@ func TestGatewayStripsCredentialBeforeOllama(t *testing.T) {
 
 	request, _ := http.NewRequest(http.MethodGet, gateway.URL+"/v1/models", nil)
 	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Origin", "https://example.proxy.runpod.net")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -63,5 +68,11 @@ func TestGatewayStripsCredentialBeforeOllama(t *testing.T) {
 
 	if got := <-authorization; got != "" {
 		t.Fatalf("Ollama received Authorization %q", got)
+	}
+	if got := <-host; got != target.Host {
+		t.Fatalf("Ollama received Host %q, want %q", got, target.Host)
+	}
+	if got := <-origin; got != "" {
+		t.Fatalf("Ollama received Origin %q", got)
 	}
 }

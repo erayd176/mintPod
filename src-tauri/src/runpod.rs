@@ -7,7 +7,7 @@ use thiserror::Error;
 
 pub const RUNPOD_BASE_URL: &str = "https://rest.runpod.io/v1";
 pub const RUNPOD_GRAPHQL_URL: &str = "https://api.runpod.io/graphql";
-pub const MINTPOD_RUNTIME_IMAGE: &str = "ghcr.io/erayd176/mintpod-runtime:0.1.0";
+pub const MINTPOD_RUNTIME_IMAGE: &str = "ghcr.io/erayd176/mintpod-runtime:0.1.1";
 const MODEL_VOLUME_PREFIX: &str = "mintpod-";
 const LEGACY_MODEL_VOLUME_PREFIX: &str = "podpilot-";
 

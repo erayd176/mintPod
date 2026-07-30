@@ -1,6 +1,6 @@
 [package]
 name = "mintpod"
-version = "0.1.0"
+version = "0.1.1"
 description = "Launch a RunPod model and wire it into local coding agents"
 authors = ["Eray Dogan"]
 license = "MIT"

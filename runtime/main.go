@@ -80,7 +80,9 @@ func authenticatedProxy(target *url.URL, token string) http.Handler {
 	originalDirector := proxy.Director
 	proxy.Director = func(request *http.Request) {
 		originalDirector(request)
+		request.Host = target.Host
 		request.Header.Del("Authorization")
+		request.Header.Del("Origin")
 		request.Header.Del("Proxy-Authorization")
 	}
 	proxy.ErrorHandler = func(response http.ResponseWriter, _ *http.Request, err error) {

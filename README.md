@@ -4,7 +4,7 @@ Launch a private coding model on RunPod, use it from your local agent tools, and
 
 mintPod is a focused Tauri desktop app for developers who want a larger open model than their machine can run without repeatedly rebuilding RunPod pods, copying endpoint URLs, editing tool configuration, or wondering whether a GPU was left billing.
 
-> **Release status:** pre-release `0.1.0`. The lifecycle and integration paths are covered by local tests. The four shipped model/GPU profiles are deliberately marked **Candidate** until each passes the paid contract matrix on real RunPod capacity.
+> **Release status:** pre-release `0.1.1`. The lifecycle and integration paths are covered by local tests. The four shipped model/GPU profiles are deliberately marked **Candidate** until each passes the paid contract matrix on real RunPod capacity.
 
 ## The workflow
 
@@ -107,7 +107,7 @@ npm ci
 npm run tauri -- dev
 ```
 
-The app expects the pinned `ghcr.io/erayd176/mintpod-runtime:0.1.0` image. A release tag must publish that runtime image before its desktop installers are distributed.
+The app expects the pinned `ghcr.io/erayd176/mintpod-runtime:0.1.1` image. A release tag must publish that runtime image before its desktop installers are distributed.
 
 ## Cost and placement behavior
 
