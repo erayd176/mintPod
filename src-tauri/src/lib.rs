@@ -57,7 +57,10 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             migrate_legacy_config(&config_dir)?;
             std::fs::create_dir_all(&config_dir)?;
-            app.manage(state::AppState::load(config_dir)?);
+            let gateway_token = credentials::CredentialStore::local_gateway_token()?;
+            let gateway =
+                tauri::async_runtime::block_on(proxy::LocalGateway::start(gateway_token))?;
+            app.manage(state::AppState::load(config_dir, gateway)?);
             let window = app
                 .get_webview_window("main")
                 .expect("main window is configured");
@@ -98,7 +101,8 @@ pub fn run() {
             commands::cancel_launch,
             commands::stop_session,
             commands::recovery_status,
-            commands::cleanup_recovery
+            commands::cleanup_recovery,
+            commands::recover_session
         ])
         .run(tauri::generate_context!())
         .expect("failed to run mintPod");

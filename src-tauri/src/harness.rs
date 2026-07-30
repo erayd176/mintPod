@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::presets::Preset;
 
-pub const LOCAL_PROXY_URL: &str = "http://127.0.0.1:8080";
+pub const LOCAL_PROXY_URL: &str = crate::proxy::LOCAL_GATEWAY_URL;
 const PI_PROVIDER_ID: &str = "mintpod";
 const LEGACY_PI_PROVIDER_ID: &str = "podpilot";
 
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(current["providers"]["mintpod"]["customHeader"], "preserve");
         assert_eq!(
             current["providers"]["mintpod"]["baseUrl"],
-            "http://127.0.0.1:8080/v1"
+            "http://127.0.0.1:11435/v1"
         );
         assert_eq!(
             current["providers"]["mintpod"]["models"][0]["id"],

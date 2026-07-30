@@ -4,15 +4,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    credentials::{CredentialProfile, CredentialStore},
+    credentials::{CredentialProfile, CredentialStore, generate_secret},
     fx,
     harness::{HarnessAdapter, HarnessConnection, LOCAL_PROXY_URL, PiAdapter, WiringReceipt},
     history::{self, SessionHistoryEntry},
     journal::{JournalStage, NewSessionJournal, SessionJournal, SessionJournalStore},
     lifecycle::{BudgetTracker, LaunchBudget, StopReason},
+    ollama::OllamaClient,
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchSpec, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
-    proxy::{LocalProxy, generate_token},
     runpod::{Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, SessionView},
@@ -338,7 +338,7 @@ pub async fn launch_preset(
     )
     .await;
     match result {
-        Ok((session, wiring, proxy, runpod, usd_to_eur)) => {
+        Ok((session, wiring, runpod, usd_to_eur)) => {
             let cost_per_hr_eur = session.cost_per_hr_usd * usd_to_eur;
             let view = SessionView {
                 session,
@@ -347,11 +347,12 @@ pub async fn launch_preset(
                 idle_timeout_minutes,
                 cost_per_hr_eur,
             };
-            let view = state.finish_launch(view, proxy, runpod.clone()).await;
+            let view = state.finish_launch(view, runpod.clone()).await;
             spawn_session_monitor(app, view.clone(), runpod, usd_to_eur);
             Ok(view)
         }
         Err(error) => {
+            let _ = state.gateway.disconnect();
             let cleanup_error = cleanup_recorded_session(&state, false).await.err();
             state.fail_launch().await;
             Err(match cleanup_error {
@@ -369,7 +370,7 @@ async fn launch_preset_inner(
     cancellation: tokio_util::sync::CancellationToken,
     app: &AppHandle,
     state: &State<'_, AppState>,
-) -> Result<(RunningSession, WiringReceipt, LocalProxy, RunpodClient, f64), String> {
+) -> Result<(RunningSession, WiringReceipt, RunpodClient, f64), String> {
     let preset = state
         .presets()
         .map_err(|_| "preset catalog lock is poisoned".to_owned())?
@@ -397,7 +398,7 @@ async fn launch_preset_inner(
         },
     )
     .map_err(|error| error.to_string())?;
-    let runtime_token = generate_token().map_err(|error| error.to_string())?;
+    let runtime_token = generate_secret().map_err(|error| error.to_string())?;
     if let Err(error) = CredentialStore::store_runtime_token(&journal.launch_id, &runtime_token) {
         let _ = SessionJournalStore::clear(&state.session_journal_path);
         return Err(error.to_string());
@@ -431,6 +432,8 @@ async fn launch_preset_inner(
     }
     let pod_name = journal.pod_name.clone();
     let journal_path = state.session_journal_path.clone();
+    let launch_budget_cancellation = cancellation.clone();
+    let estimated_cost_per_hr = preset.est_cost_per_hr;
     journal.stage = JournalStage::PodRequested;
     SessionJournalStore::save(&journal_path, &journal).map_err(|error| error.to_string())?;
     let session = orchestrator
@@ -443,11 +446,24 @@ async fn launch_preset_inner(
                 context_length: DEFAULT_CONTEXT_LENGTH,
                 cancellation,
             },
-            |pod| {
+            |pod, pod_created_at_epoch_ms| {
                 journal.pod_id = Some(pod.id.clone());
+                journal.pod_created_at_epoch_ms = Some(pod_created_at_epoch_ms);
                 journal.stage = JournalStage::PodCreated;
                 SessionJournalStore::save(&journal_path, &journal)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| error.to_string())?;
+                let launch_cost_per_hr = pod
+                    .effective_cost_per_hr()
+                    .filter(|rate| rate.is_finite() && *rate > 0.0)
+                    .unwrap_or(estimated_cost_per_hr)
+                    .max(estimated_cost_per_hr);
+                spawn_launch_budget_guard(
+                    launch_budget_cancellation,
+                    budget,
+                    pod_created_at_epoch_ms,
+                    launch_cost_per_hr,
+                );
+                Ok(())
             },
             events_tx,
         )
@@ -456,25 +472,25 @@ async fn launch_preset_inner(
     let _ = forward.await;
     let usd_to_eur = fx_task.await.unwrap_or(1.0);
 
-    let proxy = match LocalProxy::start(&session.remote_url, &session.remote_token).await {
-        Ok(proxy) => proxy,
-        Err(error) => return Err(error.to_string()),
-    };
+    state
+        .gateway
+        .connect(&session.remote_url, &session.remote_token)
+        .map_err(|error| error.to_string())?;
     let adapter = match PiAdapter::system() {
         Ok(adapter) => adapter,
         Err(error) => {
-            proxy.shutdown().await;
+            let _ = state.gateway.disconnect();
             return Err(error.to_string());
         }
     };
     let wiring = match adapter.wire(&HarnessConnection {
         url: LOCAL_PROXY_URL,
-        api_key: proxy.token(),
+        api_key: state.gateway.token(),
         preset: &preset,
     }) {
         Ok(receipt) => receipt,
         Err(error) => {
-            proxy.shutdown().await;
+            let _ = state.gateway.disconnect();
             return Err(error.to_string());
         }
     };
@@ -493,7 +509,26 @@ async fn launch_preset_inner(
     SessionJournalStore::save(&state.session_journal_path, &journal)
         .map_err(|error| error.to_string())?;
 
-    Ok((session, wiring, proxy, runpod, usd_to_eur))
+    Ok((session, wiring, runpod, usd_to_eur))
+}
+
+fn spawn_launch_budget_guard(
+    cancellation: tokio_util::sync::CancellationToken,
+    budget: LaunchBudget,
+    started_at_epoch_ms: u64,
+    conservative_cost_per_hr: f64,
+) {
+    let limit_ms = match budget {
+        LaunchBudget::Time { minutes } => u64::from(minutes) * 60_000,
+        LaunchBudget::Cost { eur } => {
+            (eur / conservative_cost_per_hr * 3_600_000.0).max(0.0) as u64
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        let elapsed_ms = now_epoch_ms().saturating_sub(started_at_epoch_ms);
+        tokio::time::sleep(Duration::from_millis(limit_ms.saturating_sub(elapsed_ms))).await;
+        cancellation.cancel();
+    });
 }
 
 #[tauri::command]
@@ -559,6 +594,132 @@ pub async fn cleanup_recovery(state: State<'_, AppState>) -> Result<(), String> 
         .await
         .map_err(|error| error.to_string())?;
     cleanup_recorded_session(&state, true).await
+}
+
+#[tauri::command]
+pub async fn recover_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SessionView, String> {
+    let cancellation = state
+        .begin_recovery()
+        .await
+        .map_err(|error| error.to_string())?;
+    let result = recover_session_inner(cancellation, &state).await;
+    match result {
+        Ok((view, runpod, usd_to_eur)) => {
+            let view = state.finish_launch(view, runpod.clone()).await;
+            spawn_session_monitor(app, view.clone(), runpod, usd_to_eur);
+            Ok(view)
+        }
+        Err(error) => {
+            let _ = state.gateway.disconnect();
+            if let Ok(Some(mut journal)) = SessionJournalStore::load(&state.session_journal_path) {
+                journal.last_error = Some(error.clone());
+                let _ = SessionJournalStore::save(&state.session_journal_path, &journal);
+            }
+            state.fail_launch().await;
+            Err(error)
+        }
+    }
+}
+
+async fn recover_session_inner(
+    cancellation: tokio_util::sync::CancellationToken,
+    state: &State<'_, AppState>,
+) -> Result<(SessionView, RunpodClient, f64), String> {
+    let mut journal = SessionJournalStore::load(&state.session_journal_path)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "no mintPod session needs recovery".to_owned())?;
+    let preset = state
+        .presets()
+        .map_err(|_| "preset catalog lock is poisoned".to_owned())?
+        .find(&journal.preset_id)
+        .ok_or_else(|| {
+            format!(
+                "recovery model '{}' is no longer configured",
+                journal.preset_id
+            )
+        })?;
+    let runpod = runpod_for_journal(state, &journal)?;
+    let pod = resolve_journal_pod(&runpod, &mut journal, &state.session_journal_path)
+        .await?
+        .ok_or_else(|| "the recovered pod no longer exists".to_owned())?;
+    if !pod.is_running() {
+        return Err(format!(
+            "the recovered pod is {}; end it before launching again",
+            pod.desired_status.as_deref().unwrap_or("not running")
+        ));
+    }
+    let remote_token = CredentialStore::read_runtime_token(&journal.launch_id)
+        .map_err(|error| error.to_string())?;
+    let remote_url = format!("https://{}-8000.proxy.runpod.net", pod.id);
+    let ollama =
+        OllamaClient::new(&remote_url, &remote_token).map_err(|error| error.to_string())?;
+    tokio::select! {
+        _ = cancellation.cancelled() => return Err("recovery cancelled".to_owned()),
+        result = ollama.wait_until_healthy(5) => result.map_err(|error| error.to_string())?,
+    }
+    if !ollama
+        .has_model(&preset.ollama_tag)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err("the recovered runtime is healthy but the model is not ready".to_owned());
+    }
+    state
+        .gateway
+        .connect(&remote_url, &remote_token)
+        .map_err(|error| error.to_string())?;
+    let adapter = PiAdapter::system().map_err(|error| error.to_string())?;
+    let wiring = adapter
+        .wire(&HarnessConnection {
+            url: LOCAL_PROXY_URL,
+            api_key: state.gateway.token(),
+            preset: &preset,
+        })
+        .map_err(|error| error.to_string())?;
+    let cost_per_hr_usd = pod
+        .effective_cost_per_hr()
+        .ok_or_else(|| "RunPod did not return a cost for the recovered pod".to_owned())?;
+    let usd_to_eur = fx::usd_to_eur(&state.fx_rate_path).await;
+    let gpu_name = pod
+        .allocated_gpu()
+        .unwrap_or("GPU details unavailable")
+        .to_owned();
+    let data_center_id = pod
+        .data_center_id()
+        .unwrap_or(&journal.data_center_id)
+        .to_owned();
+    let session = RunningSession {
+        pod_id: pod.id,
+        preset_id: preset.id,
+        model_label: preset.label,
+        ollama_tag: preset.ollama_tag,
+        gpu_name,
+        data_center_id,
+        remote_url,
+        started_at_epoch_ms: journal
+            .pod_created_at_epoch_ms
+            .unwrap_or(journal.created_at_epoch_ms),
+        cost_per_hr_usd,
+        remote_token,
+    };
+    journal.stage = JournalStage::Ready;
+    journal.last_error = None;
+    SessionJournalStore::save(&state.session_journal_path, &journal)
+        .map_err(|error| error.to_string())?;
+    Ok((
+        SessionView {
+            cost_per_hr_eur: cost_per_hr_usd * usd_to_eur,
+            session,
+            wiring,
+            budget: journal.budget,
+            idle_timeout_minutes: journal.idle_timeout_minutes,
+        },
+        runpod,
+        usd_to_eur,
+    ))
 }
 
 #[tauri::command]
@@ -644,11 +805,14 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
 
     let ActiveSession {
         view,
-        proxy,
         runpod: _,
         telemetry,
     } = active;
-    proxy.shutdown().await;
+    let gateway_error = state
+        .gateway
+        .disconnect()
+        .err()
+        .map(|error| error.to_string());
     let now = now_epoch_ms();
     let duration_seconds = now.saturating_sub(view.session.started_at_epoch_ms) / 1_000;
     let final_cost_eur = telemetry
@@ -674,7 +838,7 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
         "session-stopped",
         SessionStoppedEvent {
             reason,
-            history_error: history_error.or(journal_cleanup_error),
+            history_error: history_error.or(journal_cleanup_error).or(gateway_error),
         },
     );
     Ok(())

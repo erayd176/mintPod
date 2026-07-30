@@ -12,7 +12,7 @@ use crate::{
     lifecycle::{LaunchBudget, SessionTelemetry},
     orchestrator::RunningSession,
     presets::{PresetCatalog, PresetError},
-    proxy::LocalProxy,
+    proxy::LocalGateway,
     runpod::RunpodClient,
     settings::{AppSettings, SettingsError, SettingsStore},
 };
@@ -30,7 +30,6 @@ pub struct SessionView {
 
 pub struct ActiveSession {
     pub view: SessionView,
-    pub proxy: LocalProxy,
     pub runpod: RunpodClient,
     pub telemetry: Option<SessionTelemetry>,
 }
@@ -56,6 +55,7 @@ pub struct AppState {
     presets: RwLock<PresetCatalog>,
     settings: RwLock<AppSettings>,
     runtime: Mutex<RuntimeState>,
+    pub gateway: LocalGateway,
     pub user_presets_path: PathBuf,
     pub settings_path: PathBuf,
     pub credential_index_path: PathBuf,
@@ -80,7 +80,7 @@ pub enum StateError {
 }
 
 impl AppState {
-    pub fn load(config_dir: PathBuf) -> Result<Self, StateError> {
+    pub fn load(config_dir: PathBuf, gateway: LocalGateway) -> Result<Self, StateError> {
         let user_presets_path = config_dir.join("presets.user.json");
         let settings_path = config_dir.join("settings.json");
         let credential_index_path = config_dir.join("api-keys.json");
@@ -94,6 +94,7 @@ impl AppState {
             presets: RwLock::new(presets),
             settings: RwLock::new(settings),
             runtime: Mutex::new(RuntimeState::Idle),
+            gateway,
             user_presets_path,
             settings_path,
             credential_index_path,
@@ -145,6 +146,16 @@ impl AppState {
         Ok(cancellation)
     }
 
+    pub async fn begin_recovery(&self) -> Result<CancellationToken, StateError> {
+        let mut runtime = self.runtime.lock().await;
+        if !matches!(*runtime, RuntimeState::Idle) {
+            return Err(StateError::AlreadyActive);
+        }
+        let cancellation = CancellationToken::new();
+        *runtime = RuntimeState::Launching(cancellation.clone());
+        Ok(cancellation)
+    }
+
     pub async fn require_idle(&self) -> Result<(), StateError> {
         if matches!(*self.runtime.lock().await, RuntimeState::Idle) {
             Ok(())
@@ -153,15 +164,9 @@ impl AppState {
         }
     }
 
-    pub async fn finish_launch(
-        &self,
-        view: SessionView,
-        proxy: LocalProxy,
-        runpod: RunpodClient,
-    ) -> SessionView {
+    pub async fn finish_launch(&self, view: SessionView, runpod: RunpodClient) -> SessionView {
         *self.runtime.lock().await = RuntimeState::Running(Box::new(ActiveSession {
             view: view.clone(),
-            proxy,
             runpod,
             telemetry: None,
         }));
@@ -178,7 +183,7 @@ impl AppState {
             return None;
         };
         (active.view.session.pod_id == pod_id).then(|| SessionSample {
-            last_request_epoch_ms: active.proxy.last_request_epoch_ms(),
+            last_request_epoch_ms: self.gateway.last_inference_epoch_ms(),
         })
     }
 

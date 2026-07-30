@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -22,31 +22,38 @@ use serde::Serialize;
 use thiserror::Error;
 use tokio::{net::TcpListener, sync::oneshot, task::JoinHandle};
 
-const LISTEN_ADDRESS: &str = "127.0.0.1:8080";
+pub const LOCAL_GATEWAY_URL: &str = "http://127.0.0.1:11435";
+const LISTEN_ADDRESS: &str = "127.0.0.1:11435";
 const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
-struct ProxyState {
-    upstream: String,
+struct Upstream {
+    url: String,
     token: Arc<str>,
-    upstream_token: Arc<str>,
-    client: reqwest::Client,
-    last_request_epoch_ms: Arc<AtomicU64>,
 }
 
-pub struct LocalProxy {
-    token: String,
-    last_request_epoch_ms: Arc<AtomicU64>,
+#[derive(Clone)]
+struct GatewayState {
+    upstream: Arc<RwLock<Option<Upstream>>>,
+    local_token: Arc<str>,
+    client: reqwest::Client,
+    last_inference_epoch_ms: Arc<AtomicU64>,
+}
+
+pub struct LocalGateway {
+    local_token: String,
+    upstream: Arc<RwLock<Option<Upstream>>>,
+    last_inference_epoch_ms: Arc<AtomicU64>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
 #[derive(Debug, Error)]
-pub enum ProxyError {
-    #[error("local proxy could not bind to {LISTEN_ADDRESS}: {0}")]
+pub enum GatewayError {
+    #[error("local gateway could not bind to {LISTEN_ADDRESS}: {0}")]
     Bind(#[source] std::io::Error),
-    #[error("could not generate a local proxy token: {0}")]
-    Random(String),
+    #[error("local gateway routing lock is poisoned")]
+    RoutingLock,
 }
 
 #[derive(Serialize)]
@@ -54,22 +61,21 @@ struct ErrorBody<'a> {
     error: &'a str,
 }
 
-impl LocalProxy {
-    pub async fn start(upstream: &str, upstream_token: &str) -> Result<Self, ProxyError> {
+impl LocalGateway {
+    pub async fn start(local_token: String) -> Result<Self, GatewayError> {
         let listener = TcpListener::bind(LISTEN_ADDRESS)
             .await
-            .map_err(ProxyError::Bind)?;
-        let token = generate_token()?;
-        let last_request_epoch_ms = Arc::new(AtomicU64::new(now_epoch_ms()));
-        let state = ProxyState {
-            upstream: upstream.trim_end_matches('/').to_owned(),
-            token: Arc::from(token.as_str()),
-            upstream_token: Arc::from(upstream_token),
+            .map_err(GatewayError::Bind)?;
+        let upstream = Arc::new(RwLock::new(None));
+        let last_inference_epoch_ms = Arc::new(AtomicU64::new(now_epoch_ms()));
+        let state = GatewayState {
+            upstream: Arc::clone(&upstream),
+            local_token: Arc::from(local_token.as_str()),
             client: reqwest::Client::builder()
                 .no_proxy()
                 .build()
-                .expect("valid local proxy HTTP client"),
-            last_request_epoch_ms: Arc::clone(&last_request_epoch_ms),
+                .expect("valid local gateway HTTP client"),
+            last_inference_epoch_ms: Arc::clone(&last_inference_epoch_ms),
         };
         let router = Router::new()
             .route("/{*path}", any(forward))
@@ -85,32 +91,45 @@ impl LocalProxy {
         });
 
         Ok(Self {
-            token,
-            last_request_epoch_ms,
+            local_token,
+            upstream,
+            last_inference_epoch_ms,
             shutdown: Some(shutdown),
             task: Some(task),
         })
     }
 
     pub fn token(&self) -> &str {
-        &self.token
+        &self.local_token
     }
 
-    pub fn last_request_epoch_ms(&self) -> u64 {
-        self.last_request_epoch_ms.load(Ordering::Relaxed)
+    pub fn connect(&self, upstream_url: &str, upstream_token: &str) -> Result<(), GatewayError> {
+        *self
+            .upstream
+            .write()
+            .map_err(|_| GatewayError::RoutingLock)? = Some(Upstream {
+            url: upstream_url.trim_end_matches('/').to_owned(),
+            token: Arc::from(upstream_token),
+        });
+        self.last_inference_epoch_ms
+            .store(now_epoch_ms(), Ordering::Relaxed);
+        Ok(())
     }
 
-    pub async fn shutdown(mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(task) = self.task.take() {
-            let _ = task.await;
-        }
+    pub fn disconnect(&self) -> Result<(), GatewayError> {
+        *self
+            .upstream
+            .write()
+            .map_err(|_| GatewayError::RoutingLock)? = None;
+        Ok(())
+    }
+
+    pub fn last_inference_epoch_ms(&self) -> u64 {
+        self.last_inference_epoch_ms.load(Ordering::Relaxed)
     }
 }
 
-impl Drop for LocalProxy {
+impl Drop for LocalGateway {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
@@ -121,16 +140,33 @@ impl Drop for LocalProxy {
     }
 }
 
-async fn forward(State(state): State<ProxyState>, request: Request<Body>) -> Response<Body> {
-    if !has_valid_token(request.headers(), &state.token) {
+async fn forward(State(state): State<GatewayState>, request: Request<Body>) -> Response<Body> {
+    if !has_valid_token(request.headers(), &state.local_token) {
         return json_error(StatusCode::UNAUTHORIZED, "invalid local API key");
     }
+    let upstream = match state.upstream.read() {
+        Ok(route) => route.clone(),
+        Err(_) => {
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "gateway state unavailable",
+            );
+        }
+    };
+    let Some(upstream) = upstream else {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no model session is running",
+        );
+    };
 
-    state
-        .last_request_epoch_ms
-        .store(now_epoch_ms(), Ordering::Relaxed);
+    if is_inference_path(request.uri().path()) {
+        state
+            .last_inference_epoch_ms
+            .store(now_epoch_ms(), Ordering::Relaxed);
+    }
     let (parts, body) = request.into_parts();
-    let target = target_url(&state.upstream, parts.uri.path_and_query());
+    let target = target_url(&upstream.url, parts.uri.path_and_query());
     let request_body = match to_bytes(body, MAX_REQUEST_BYTES).await {
         Ok(body) => body,
         Err(_) => return json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"),
@@ -138,7 +174,7 @@ async fn forward(State(state): State<ProxyState>, request: Request<Body>) -> Res
     let mut outbound = state
         .client
         .request(parts.method, target)
-        .bearer_auth(state.upstream_token.as_ref());
+        .bearer_auth(upstream.token.as_ref());
     for (name, value) in &parts.headers {
         if should_forward_request_header(name) {
             outbound = outbound.header(name, value);
@@ -166,6 +202,13 @@ fn has_valid_token(headers: &HeaderMap, token: &str) -> bool {
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value == expected)
+}
+
+fn is_inference_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/v1/chat/completions" | "/v1/completions" | "/api/chat" | "/api/generate"
+    )
 }
 
 fn target_url(upstream: &str, path_and_query: Option<&axum::http::uri::PathAndQuery>) -> String {
@@ -205,17 +248,6 @@ fn json_error(status: StatusCode, message: &'static str) -> Response<Body> {
     (status, axum::Json(ErrorBody { error: message })).into_response()
 }
 
-pub(crate) fn generate_token() -> Result<String, ProxyError> {
-    let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|error| ProxyError::Random(error.to_string()))?;
-    let mut token = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write;
-        write!(&mut token, "{byte:02x}").expect("writing to a String cannot fail");
-    }
-    Ok(token)
-}
-
 fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -228,19 +260,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn token_has_256_bits_of_hex_entropy() {
-        let token = generate_token().unwrap();
-        assert_eq!(token.len(), 64);
-        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn authorization_requires_the_bearer_scheme_and_exact_token() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer correct".parse().unwrap());
 
         assert!(has_valid_token(&headers, "correct"));
         assert!(!has_valid_token(&headers, "wrong"));
+    }
+
+    #[test]
+    fn only_generation_requests_count_as_activity() {
+        assert!(is_inference_path("/v1/chat/completions"));
+        assert!(is_inference_path("/api/generate"));
+        assert!(!is_inference_path("/v1/models"));
+        assert!(!is_inference_path("/api/tags"));
     }
 
     #[test]

@@ -38,6 +38,7 @@ pub struct SessionJournal {
     pub stage: JournalStage,
     pub volume_id: Option<String>,
     pub pod_id: Option<String>,
+    pub pod_created_at_epoch_ms: Option<u64>,
     pub last_error: Option<String>,
 }
 
@@ -88,6 +89,7 @@ impl SessionJournalStore {
             stage: JournalStage::Prepared,
             volume_id: None,
             pod_id: None,
+            pod_created_at_epoch_ms: None,
             last_error: None,
         };
         Self::save(path, &journal)?;

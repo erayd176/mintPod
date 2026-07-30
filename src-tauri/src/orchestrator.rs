@@ -112,7 +112,7 @@ impl LaunchOrchestrator {
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError>
     where
-        F: FnOnce(&crate::runpod::Pod) -> Result<(), String>,
+        F: FnOnce(&crate::runpod::Pod, u64) -> Result<(), String>,
     {
         send_stage(
             &events,
@@ -129,7 +129,7 @@ impl LaunchOrchestrator {
         );
         let started_at_epoch_ms = now_epoch_ms();
         let pod = self.runpod.create_pod(&request).await?;
-        if let Err(error) = on_pod_created(&pod) {
+        if let Err(error) = on_pod_created(&pod, started_at_epoch_ms) {
             let cleanup = self.runpod.terminate_pod(&pod.id).await.err();
             let message = match cleanup {
                 Some(cleanup) => format!("{error}; immediate cleanup failed: {cleanup}"),

@@ -16,6 +16,7 @@ const LEGACY_ID: &str = "legacy";
 const LEGACY_USER: &str = "runpod-api-key";
 const USER_PREFIX: &str = "runpod-api-key-";
 const RUNTIME_USER_PREFIX: &str = "runtime-token-";
+const LOCAL_GATEWAY_USER: &str = "local-gateway-token";
 const MAX_LABEL_CHARS: usize = 32;
 
 #[derive(Debug, Clone, Serialize)]
@@ -108,6 +109,25 @@ impl CredentialStore {
             .map_err(keychain_error)
     }
 
+    pub fn read_runtime_token(launch_id: &str) -> Result<String, CredentialError> {
+        runtime_entry(launch_id)?
+            .get_password()
+            .map_err(keychain_error)
+    }
+
+    pub fn local_gateway_token() -> Result<String, CredentialError> {
+        let entry = Entry::new(SERVICE, LOCAL_GATEWAY_USER).map_err(keychain_error)?;
+        match entry.get_password() {
+            Ok(token) if !token.trim().is_empty() => Ok(token),
+            Ok(_) | Err(KeyringError::NoEntry) => {
+                let token = generate_secret()?;
+                entry.set_password(&token).map_err(keychain_error)?;
+                Ok(token)
+            }
+            Err(error) => Err(keychain_error(error)),
+        }
+    }
+
     pub fn delete_runtime_token(launch_id: &str) -> Result<(), CredentialError> {
         match runtime_entry(launch_id)?.delete_credential() {
             Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
@@ -185,6 +205,15 @@ impl CredentialStore {
         }
         Ok(())
     }
+}
+
+pub fn generate_secret() -> Result<String, CredentialError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| CredentialError::Random(error.to_string()))?;
+    Ok(bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
 }
 
 fn load_with_legacy(path: &Path) -> Result<CredentialIndex, CredentialError> {
@@ -473,5 +502,13 @@ mod tests {
         let profiles = profile_views(&index);
         assert!(!profiles[0].active);
         assert!(profiles[1].active);
+    }
+
+    #[test]
+    fn generated_secrets_have_256_bits_of_hex_entropy() {
+        let token = generate_secret().unwrap();
+
+        assert_eq!(token.len(), 64);
+        assert!(token.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 }
