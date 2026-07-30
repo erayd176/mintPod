@@ -266,6 +266,8 @@
   let cancellingLaunch = false;
   let preflight: GpuPreflight | null = null;
   let preflightBusy = false;
+  let preflightRequested = false;
+  let preflightTimer: ReturnType<typeof setTimeout> | null = null;
   let diagnosticsCopied = false;
   let endpointCopied = false;
   let startupFailure: StartupFailure | null = null;
@@ -308,6 +310,7 @@
     return () => {
       for (const dispose of disposers) dispose();
       cancelStop();
+      if (preflightTimer) clearTimeout(preflightTimer);
     };
   });
 
@@ -454,9 +457,11 @@
     if (!settings) return;
     try {
       await invoke("set_storage_region", { region: settings.storageRegion });
+      invalidatePreflight();
       await refreshCache();
     } catch (error) {
       fail(error);
+      settings = await invoke<Settings>("get_settings");
     }
   }
 
@@ -466,6 +471,8 @@
       await invoke("set_idle_timeout", { minutes: settings.idleTimeoutMinutes });
     } catch (error) {
       fail(error);
+      // The backend rejected the value; do not leave it bound in the field.
+      settings = await invoke<Settings>("get_settings");
     }
   }
 
@@ -719,6 +726,7 @@
 
   async function checkAvailability() {
     if (!selectedPreset || preflightBusy) return;
+    preflightRequested = true;
     preflightBusy = true;
     dismissError();
     try {
@@ -734,10 +742,24 @@
     }
   }
 
+  // A preflight result only describes the model, ceiling and region it was
+  // taken for. Any change to those invalidates it immediately; it is refetched
+  // only once the user has asked for live stock at least once.
+  function invalidatePreflight() {
+    preflight = null;
+    if (preflightTimer) clearTimeout(preflightTimer);
+    preflightTimer = null;
+    if (!preflightRequested) return;
+    preflightTimer = setTimeout(() => {
+      preflightTimer = null;
+      void checkAvailability();
+    }, 400);
+  }
+
   function selectPreset(preset: Preset) {
     selectedId = preset.id;
     maxHourlyRateUsd = recommendedMaxRate(preset);
-    preflight = null;
+    invalidatePreflight();
   }
 
   async function copyDiagnostics() {
@@ -1247,6 +1269,7 @@
                     max="10"
                     step="0.05"
                     bind:value={maxHourlyRateUsd}
+                    oninput={invalidatePreflight}
                   />
                   <span>/hr</span>
                 </div>
