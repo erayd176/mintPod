@@ -14,7 +14,7 @@ mintPod is a small desktop control panel for running a coding model on RunPod wi
 - Stops on the selected budget or on real proxy inactivity, then terminates the pod after a five-minute grace period.
 - Keeps the RunPod API key in the operating system keychain. There is no telemetry, account layer, or cloud sync.
 
-<img width="426" height="556" alt="image" src="https://github.com/user-attachments/assets/57fc445a-20ed-413e-a142-ec792273418c" />
+<img width="426" height="556" alt="image" src="https://github.com/user-attachments/assets/df46d313-19b5-48b2-a696-76543479ac87" />
 
 
 ## Requirements
