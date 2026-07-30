@@ -623,4 +623,39 @@ mod tests {
             "/pods/pod-1?includeMachine=true&includeNetworkVolume=true"
         );
     }
+
+    #[test]
+    #[ignore = "requires MINTPOD_LIVE_RUNPOD_TESTS=1 and RUNPOD_API_KEY; performs read-only live API calls"]
+    fn live_runpod_read_contract() {
+        assert_eq!(
+            std::env::var("MINTPOD_LIVE_RUNPOD_TESTS").as_deref(),
+            Ok("1"),
+            "set MINTPOD_LIVE_RUNPOD_TESTS=1 to acknowledge a live RunPod API test"
+        );
+        let api_key = std::env::var("RUNPOD_API_KEY")
+            .expect("RUNPOD_API_KEY is required for the live RunPod contract");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Tokio runtime should start");
+
+        runtime.block_on(async move {
+            let client = RunpodClient::new(api_key).expect("RunPod client should initialize");
+            client
+                .validate_key()
+                .await
+                .expect("REST pod listing contract should succeed");
+            let inventory = client
+                .gpu_inventory()
+                .await
+                .expect("GraphQL GPU inventory contract should succeed");
+            assert!(!inventory.is_empty(), "GPU inventory should not be empty");
+            assert!(
+                inventory
+                    .iter()
+                    .any(|gpu| gpu.secure_cloud && gpu.lowest_price.is_some()),
+                "inventory should contain a priced Secure Cloud GPU"
+            );
+        });
+    }
 }

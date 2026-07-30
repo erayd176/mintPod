@@ -259,4 +259,11 @@ impl AppState {
             RuntimeState::Running(_) => "running",
         }
     }
+
+    pub async fn running_model(&self) -> Option<String> {
+        match &*self.runtime.lock().await {
+            RuntimeState::Running(active) => Some(active.view.session.ollama_tag.clone()),
+            RuntimeState::Idle | RuntimeState::Launching(_) => None,
+        }
+    }
 }

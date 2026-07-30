@@ -1,77 +1,106 @@
 # Contributing to mintPod
 
-mintPod is deliberately narrow. Changes should make the launch-to-agent path safer, clearer, or easier to maintain without introducing accounts, telemetry, chat UI, cloud sync, free-form GPU selection, or another configuration layer.
+mintPod is deliberately narrow. Changes should make the path from “choose a model” to “use it from a local coding agent” safer, clearer, or more reliable. Accounts, telemetry, chat UI, general pod administration, multiple concurrent sessions, and unrelated workload types are outside the `0.1.x` scope.
 
-## Before changing code
+## Architecture boundaries
 
-Install the prerequisites and run the development checks from the [README](README.md#development). Keep orchestration in Rust. Svelte should display backend state and submit explicit user intent; it should not call RunPod, edit harness files, calculate stop conditions, or invent progress.
+- Rust owns RunPod calls, durable ownership, cleanup, budgets, the local gateway, keychain access, atomic file writes, and coding-tool integration.
+- Svelte renders backend state and submits explicit user intent. It must not calculate stop conditions, mutate tool files, or call RunPod directly.
+- `runtime/` is the only public pod service. Raw Ollama must remain bound to pod loopback.
+- npm and `package-lock.json` are the canonical frontend package-manager state.
 
-Keep patches small enough to review. Commit messages use the imperative mood and describe one complete scope.
+Keep patches small enough to review. Commit messages use the imperative mood and cover one complete scope.
 
-## Add or update a curated preset
+## Add or update a curated profile
 
-Curated presets are source-controlled product decisions, not a mirror of the Ollama library. A candidate should be useful for coding-agent work, fit the default hobby range, and have a GPU fallback list that has been exercised on RunPod.
+Curated profiles are compatibility contracts, not a mirror of the Ollama library.
 
-1. Pull the exact `ollamaTag` with a current Ollama release.
-2. Record the downloaded weight size shown by `ollama list`; do not estimate from parameter count.
-3. Measure minimum practical VRAM with the configured context, not just the theoretical weight size.
-4. Copy exact RunPod GPU type IDs and rank them from preferred to last fallback.
-5. Record a realistic observed hourly rate for the preferred tier.
-6. Add one file under `presets/` and add its `include_str!` entry to `CURATED` in `src-tauri/src/presets.rs`.
-7. Run the validation and build checks below.
+1. Pull the exact `ollamaTag` with the Ollama version pinned by `runtime/Dockerfile`.
+2. Record the downloaded weight size from `ollama list`.
+3. Choose a context of at least 64,000 tokens and measure practical VRAM at that context.
+4. Copy exact RunPod GPU type IDs and rank the acceptable fallbacks.
+5. Record a conservative expected hourly rate.
+6. Add one JSON file under `presets/` and its `include_str!` entry to `CURATED` in `src-tauri/src/presets.rs`.
+7. Start with `"verification": "candidate"`.
+8. Run all local checks and the paid matrix before changing the status to `manuallyTested`.
 
-Use this shape:
+Example:
 
 ```json
 {
   "id": "model-slug",
   "label": "Human model name",
   "ollamaTag": "namespace/model:tag",
-  "sizeGb": 6.4,
-  "minVramGb": 12,
+  "sizeGb": 15.0,
+  "minVramGb": 48,
   "gpuTypeIds": [
-    "NVIDIA GeForce RTX 4090",
-    "NVIDIA RTX A5000"
+    "NVIDIA A40",
+    "NVIDIA RTX A6000"
   ],
-  "estCostPerHr": 0.34,
-  "tags": ["coding"]
+  "estCostPerHr": 0.55,
+  "tags": ["agentic", "coding", "tools"],
+  "contextLength": 65536,
+  "maxOutputTokens": 16384,
+  "verification": "candidate"
 }
 ```
 
-The schema rejects unknown fields. IDs use lowercase kebab case. Tags use lowercase kebab case. Curated model files over 16 GB are rejected at startup; larger personal presets belong in `presets.user.json`.
+The schema rejects unknown fields. IDs and tags use lowercase kebab case. Curated profiles over 20 GB or below 64K context are rejected at startup. Larger personal models belong in `presets.user.json`.
 
-## Verify a preset
+## Local verification
 
-Run:
+Run from the repository root:
 
 ```sh
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib
+npm ci
 npm run check
 npm run build
+go test -C runtime ./...
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Then perform one real RunPod verification:
+The default Rust feature set is intentional: integration and command tests must compile with the same desktop runtime used in release builds.
 
-- The first launch selects one of the ranked GPUs.
-- The pod mounts the expected Network Volume at `/root/.ollama`.
-- Pulling reports byte progress from Ollama rather than a timer.
-- The model answers an OpenAI-compatible request through `127.0.0.1:8080`.
-- `pi`, followed by `/models`, lists the `mintpod` provider and the exact Ollama tag.
-- A stop releases the GPU without deleting the Network Volume.
-- A second launch reports the model as cached and reaches warm state without pulling it again.
-- Idle timeout and the selected budget both stop the pod when tested with short safe values.
+## Live verification
 
-Include the RunPod GPU type used, observed rate, pull size, and first/second launch result in the pull request. Do not include API keys, proxy tokens, pod IDs, or the contents of Pi credential files.
+The ignored live contract checks only authenticated REST and GraphQL reads and creates no resources:
 
-## Change a GPU tier
+```sh
+MINTPOD_LIVE_RUNPOD_TESTS=1 \
+RUNPOD_API_KEY='...' \
+cargo test --manifest-path src-tauri/Cargo.toml live_runpod_read_contract -- --ignored
+```
 
-GPU tiers live in `src-tauri/src/presets.rs`. They are ranked lists. Reordering them changes provisioning behavior for every custom preset using that tier, so verify availability, VRAM, and rate before changing the order. Do not add a free-form GPU picker to the UI.
+A profile is not `manuallyTested` until it passes [the paid contract matrix](docs/PAID_CONTRACT_TESTS.md). Record:
+
+- operating system and mintPod commit;
+- exact Ollama tag and runtime image;
+- requested and allocated GPU;
+- data center and observed hourly rate;
+- loaded context from the app verification;
+- first-launch pull and second-launch cache result;
+- Pi, OpenCode, and Aider outcomes;
+- cancellation, recovery, idle, budget, and final cleanup outcomes.
+
+Never post API keys, gateway tokens, pod IDs, machine IDs, raw diagnostics containing user-added data, or tool configuration contents.
+
+## Integration rules
+
+- Pi and OpenCode writes must be atomic and own only the `mintpod` entry.
+- Existing providers and unknown fields must survive publish and unpublish unchanged.
+- Invalid existing JSON must produce a useful error and remain byte-for-byte unchanged.
+- Aider remains command-only unless there is a separate design decision for reversible ownership.
+- A missing or broken tool integration must not keep the paid GPU from becoming usable.
+- All mintPod-owned entries are removed after normal end or recovery cleanup.
 
 ## Pull request checklist
 
-- The change stays within mintPod's stated scope.
-- New JSON persists atomically and malformed user data fails with a useful error.
-- The RunPod key never leaves the OS keychain.
-- Existing Pi providers survive a wiring update unchanged.
-- Rust tests, Svelte checks, and the production frontend build pass.
-- Platform-specific behavior is either tested on that platform or called out explicitly.
+- The change stays inside the current product scope.
+- Paid mutations have durable ownership before or immediately after the remote mutation.
+- Failure and cancellation paths have compensating cleanup.
+- Secrets do not enter logs, settings, diagnostics, pod names, or source-controlled fixtures.
+- JSON persistence is atomic and malformed user data fails safely.
+- Rust tests, runtime tests, Svelte checks, linting, and the production frontend build pass.
+- Platform-specific behavior was tested on that platform or called out explicitly.

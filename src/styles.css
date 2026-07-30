@@ -1464,6 +1464,20 @@ button:disabled {
   color: #e48a8d;
 }
 
+.endpoint-copy {
+  align-self: flex-end;
+  margin-top: 5px;
+  padding: 0;
+  border: 0;
+  color: #666d75;
+  background: transparent;
+  font-size: 7.5px;
+}
+
+.endpoint-copy:hover {
+  color: var(--green);
+}
+
 .copy-icon {
   color: #687069;
 }

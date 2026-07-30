@@ -85,6 +85,12 @@
     }>;
   }
 
+  interface ConnectionDetails {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }
+
   interface ApiKeyProfile {
     id: string;
     label: string;
@@ -240,6 +246,7 @@
   let preflight: GpuPreflight | null = null;
   let preflightBusy = false;
   let diagnosticsCopied = false;
+  let endpointCopied = false;
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: selectedGpuTier =
@@ -676,6 +683,27 @@
       await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
       diagnosticsCopied = true;
       window.setTimeout(() => (diagnosticsCopied = false), 1400);
+    } catch (error) {
+      errorMessage = messageFrom(error);
+    }
+  }
+
+  async function copyEndpointConfig() {
+    try {
+      const connection = await invoke<ConnectionDetails>("connection_details");
+      await navigator.clipboard.writeText(
+        JSON.stringify(
+          {
+            baseURL: connection.baseUrl,
+            apiKey: connection.apiKey,
+            model: connection.model
+          },
+          null,
+          2
+        )
+      );
+      endpointCopied = true;
+      window.setTimeout(() => (endpointCopied = false), 1400);
     } catch (error) {
       errorMessage = messageFrom(error);
     }
@@ -1561,6 +1589,9 @@
                 </div>
               {/each}
             </div>
+            <button class="endpoint-copy" type="button" onclick={copyEndpointConfig}>
+              {endpointCopied ? "OpenAI config copied" : "Copy OpenAI-compatible config"}
+            </button>
 
             {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
             <button

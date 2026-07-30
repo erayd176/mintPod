@@ -112,9 +112,9 @@ pub struct GpuPreflightView {
 pub struct DiagnosticsView {
     app_version: &'static str,
     runtime_state: &'static str,
-    active_pod_id: Option<String>,
+    has_active_pod: bool,
+    has_recovery: bool,
     recovery_stage: Option<JournalStage>,
-    recovery_last_error: Option<String>,
     local_endpoint: &'static str,
     local_gateway_connected: bool,
     runtime_image: &'static str,
@@ -123,6 +123,14 @@ pub struct DiagnosticsView {
     integrations: crate::settings::IntegrationPreferences,
     api_key_profile_count: usize,
     config_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionView {
+    base_url: &'static str,
+    api_key: String,
+    model: String,
 }
 
 #[tauri::command]
@@ -300,12 +308,13 @@ pub async fn diagnostics(state: State<'_, AppState>) -> Result<DiagnosticsView, 
     let api_key_profile_count = CredentialStore::list_profiles(&state.credential_index_path)
         .map_err(|error| error.to_string())?
         .len();
+    let has_active_pod = state.running_pod_id().await.is_some();
     Ok(DiagnosticsView {
         app_version: env!("CARGO_PKG_VERSION"),
         runtime_state: state.runtime_label().await,
-        active_pod_id: state.running_pod_id().await,
+        has_active_pod,
+        has_recovery: journal.is_some(),
         recovery_stage: journal.as_ref().map(|journal| journal.stage),
-        recovery_last_error: journal.and_then(|journal| journal.last_error),
         local_endpoint: LOCAL_GATEWAY_URL,
         local_gateway_connected: state
             .gateway
@@ -322,6 +331,19 @@ pub async fn diagnostics(state: State<'_, AppState>) -> Result<DiagnosticsView, 
             PathBuf::from("active-session.json"),
             PathBuf::from("session-history.json"),
         ],
+    })
+}
+
+#[tauri::command]
+pub async fn connection_details(state: State<'_, AppState>) -> Result<ConnectionView, String> {
+    let model = state
+        .running_model()
+        .await
+        .ok_or_else(|| "no running session".to_owned())?;
+    Ok(ConnectionView {
+        base_url: "http://127.0.0.1:11435/v1",
+        api_key: state.gateway.token().to_owned(),
+        model,
     })
 }
 

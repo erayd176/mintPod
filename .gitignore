@@ -5,3 +5,5 @@ src-tauri/gen/
 .DS_Store
 *.log
 
+# npm and package-lock.json are the canonical frontend package-manager state.
+pnpm-lock.yaml
