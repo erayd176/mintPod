@@ -15,6 +15,7 @@
     | "launching"
     | "running";
   type BudgetMode = "time" | "cost";
+  type ErrorScope = "startup" | "setup" | "recovery" | "idle" | "manage" | "running";
   type LaunchStage =
     | "requestingPod"
     | "bootingContainer"
@@ -234,7 +235,7 @@
   let keyBusy = "";
   let setupBusy = false;
   let launchBusy = false;
-  let errorMessage = "";
+  let appError: { scope: ErrorScope; message: string } | null = null;
   let alwaysOnTop = false;
   let budgetMode: BudgetMode = "time";
   let timeBudgetMinutes = 60;
@@ -291,14 +292,14 @@
       session = null;
       telemetry = null;
       screen = "idle";
-      if (payload.historyError) errorMessage = payload.historyError;
+      if (payload.historyError) fail(payload.historyError);
       void refreshHistory();
       void refreshCache();
     }).then((dispose) => {
       disposers.push(dispose);
     });
     void listen<string>("session-cleanup-error", ({ payload }) => {
-      errorMessage = payload;
+      fail(payload, "running");
     }).then((dispose) => {
       disposers.push(dispose);
     });
@@ -351,15 +352,15 @@
         screen = "setup";
       }
     } catch (error) {
-      errorMessage = messageFrom(error);
       screen = "setup";
+      fail(error, "setup");
     }
   }
 
   async function retryStartup() {
     if (startupBusy) return;
     startupBusy = "retry";
-    errorMessage = "";
+    dismissError();
     try {
       startupFailure = await invoke<StartupFailure | null>("retry_startup");
       if (!startupFailure) {
@@ -367,7 +368,7 @@
         await initialize();
       }
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       startupBusy = "";
     }
@@ -376,11 +377,11 @@
   async function resetLocalConfig(file: string) {
     if (startupBusy) return;
     startupBusy = "reset";
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("reset_local_config", { file });
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       startupBusy = "";
       return;
     }
@@ -390,22 +391,25 @@
 
   async function refreshRecovery(clearError = true) {
     recoveryUnknown = false;
-    if (clearError) errorMessage = "";
+    if (clearError) dismissError();
     try {
       recovery = await invoke<Recovery | null>("recovery_status");
       screen = recovery ? "recovery" : "idle";
+      // A failed reconnect that resolved to no remaining ownership still has to
+      // report why, so carry the error onto the screen the user lands on.
+      if (appError) fail(appError.message);
     } catch (error) {
       recovery = null;
       recoveryUnknown = true;
-      errorMessage = messageFrom(error);
       screen = "recovery";
+      fail(error, "recovery");
     }
   }
 
   async function reconnectRecovery() {
     if (recoveryBusy) return;
     recoveryBusy = "reconnect";
-    errorMessage = "";
+    dismissError();
     try {
       session = await invoke<Session>("recover_session");
       initializeTelemetry(session);
@@ -413,7 +417,7 @@
       recoveryUnknown = false;
       screen = "running";
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       await refreshRecovery(false);
     } finally {
       recoveryBusy = "";
@@ -423,7 +427,7 @@
   async function endRecovery() {
     if (recoveryBusy) return;
     recoveryBusy = "cleanup";
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("cleanup_recovery");
       recovery = null;
@@ -431,7 +435,7 @@
       screen = "idle";
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       recoveryUnknown = true;
     } finally {
       recoveryBusy = "";
@@ -442,7 +446,7 @@
     try {
       recentSessions = await invoke<HistoryEntry[]>("session_history");
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -452,7 +456,7 @@
       await invoke("set_storage_region", { region: settings.storageRegion });
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -461,7 +465,7 @@
     try {
       await invoke("set_idle_timeout", { minutes: settings.idleTimeoutMinutes });
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -470,7 +474,7 @@
     try {
       await invoke("set_integration_enabled", { integrationId, enabled });
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       settings = await invoke<Settings>("get_settings");
     }
   }
@@ -478,7 +482,7 @@
   async function saveApiKey() {
     if (!apiKey.trim() || !apiKeyLabel.trim()) return;
     setupBusy = true;
-    errorMessage = "";
+    dismissError();
     try {
       await invoke<ApiKeyProfile>("add_api_key", {
         label: apiKeyLabel.trim(),
@@ -489,7 +493,7 @@
       screen = "idle";
       void refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       setupBusy = false;
     }
@@ -503,7 +507,7 @@
   async function addApiKey() {
     if (!newApiKey.trim() || !newApiKeyLabel.trim() || keyBusy) return;
     keyBusy = "add";
-    errorMessage = "";
+    dismissError();
     try {
       await invoke<ApiKeyProfile>("add_api_key", {
         label: newApiKeyLabel.trim(),
@@ -514,7 +518,7 @@
       await refreshApiKeys();
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       keyBusy = "";
     }
@@ -523,13 +527,13 @@
   async function selectApiKey(profileId: string) {
     if (!profileId || keyBusy) return;
     keyBusy = `select:${profileId}`;
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("select_api_key", { profileId });
       await refreshApiKeys();
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       await refreshApiKeys();
     } finally {
       keyBusy = "";
@@ -539,13 +543,13 @@
   function beginReplaceApiKey(profileId: string) {
     replacingProfileId = profileId;
     replacementApiKey = "";
-    errorMessage = "";
+    dismissError();
   }
 
   async function replaceApiKey(profileId: string) {
     if (!replacementApiKey.trim() || keyBusy) return;
     keyBusy = `replace:${profileId}`;
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("replace_api_key", {
         profileId,
@@ -555,7 +559,7 @@
       replacingProfileId = "";
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       keyBusy = "";
     }
@@ -564,7 +568,7 @@
   async function removeApiKey(profileId: string) {
     if (keyBusy) return;
     keyBusy = `remove:${profileId}`;
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("remove_api_key", { profileId });
       if (replacingProfileId === profileId) {
@@ -579,7 +583,7 @@
         await refreshCache();
       }
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       keyBusy = "";
     }
@@ -592,7 +596,7 @@
       cachedModels = cache.models;
       totalAllocatedGb = cache.totalAllocatedGb;
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       cacheBusy = false;
     }
@@ -600,7 +604,7 @@
 
   async function openManage() {
     screen = "manage";
-    errorMessage = "";
+    dismissError();
     try {
       const [tiers] = await Promise.all([
         gpuTiers.length ? Promise.resolve(gpuTiers) : invoke<GpuTier[]>("list_gpu_tiers"),
@@ -612,18 +616,18 @@
         customGpuTierId = tiers[0]?.id ?? "";
       }
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
   async function deleteCachedModel(volumeId: string) {
     deletingVolumeId = volumeId;
-    errorMessage = "";
+    dismissError();
     try {
       await invoke("delete_cached_model", { volumeId });
       await refreshCache();
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       deletingVolumeId = "";
     }
@@ -632,7 +636,7 @@
   async function addCustomPreset(confirmOutsideRange = false) {
     if (!selectedGpuTier || customBusy || !customTag.trim()) return;
     customBusy = true;
-    errorMessage = "";
+    dismissError();
     try {
       const result = await invoke<AddPresetResult>("add_custom_preset", {
         input: {
@@ -656,7 +660,7 @@
       customMinVramGb = 12;
       customWarning = "";
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       customBusy = false;
     }
@@ -665,7 +669,7 @@
   async function launch() {
     if (!selectedPreset || launchBusy) return;
     launchBusy = true;
-    errorMessage = "";
+    dismissError();
     stages = freshStages();
     screen = "launching";
     try {
@@ -680,8 +684,8 @@
       initializeTelemetry(session);
       screen = "running";
     } catch (error) {
-      errorMessage = messageFrom(error);
       screen = "idle";
+      fail(error, "idle");
     } finally {
       launchBusy = false;
       cancellingLaunch = false;
@@ -708,7 +712,7 @@
     try {
       await invoke("cancel_launch");
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
       cancellingLaunch = false;
     }
   }
@@ -716,7 +720,7 @@
   async function checkAvailability() {
     if (!selectedPreset || preflightBusy) return;
     preflightBusy = true;
-    errorMessage = "";
+    dismissError();
     try {
       preflight = await invoke<GpuPreflight>("preflight_preset", {
         presetId: selectedPreset.id,
@@ -724,7 +728,7 @@
       });
     } catch (error) {
       preflight = null;
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       preflightBusy = false;
     }
@@ -743,7 +747,7 @@
       diagnosticsCopied = true;
       window.setTimeout(() => (diagnosticsCopied = false), 1400);
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -764,7 +768,7 @@
       endpointCopied = true;
       window.setTimeout(() => (endpointCopied = false), 1400);
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -795,7 +799,7 @@
       await getCurrentWindow().setAlwaysOnTop(next);
       alwaysOnTop = next;
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     }
   }
 
@@ -828,7 +832,7 @@
       telemetry = null;
       screen = "idle";
     } catch (error) {
-      errorMessage = messageFrom(error);
+      fail(error);
     } finally {
       stopBusy = false;
       holdingStop = false;
@@ -874,7 +878,48 @@
   function messageFrom(error: unknown) {
     return error instanceof Error ? error.message : String(error);
   }
+
+  // Errors belong to the screen that can act on them, so a stale failure from
+  // Manage never reappears over the launch controls.
+  function currentScope(): ErrorScope {
+    switch (screen) {
+      case "blocked":
+        return "startup";
+      case "setup":
+        return "setup";
+      case "recovery":
+        return "recovery";
+      case "manage":
+        return "manage";
+      case "launching":
+      case "running":
+        return "running";
+      default:
+        return "idle";
+    }
+  }
+
+  function fail(error: unknown, scope: ErrorScope = currentScope()) {
+    appError = { scope, message: messageFrom(error) };
+  }
+
+  function dismissError() {
+    appError = null;
+  }
+
+  function errorFor(scope: ErrorScope) {
+    return appError?.scope === scope ? appError.message : "";
+  }
 </script>
+
+{#snippet errorCard(message: string)}
+  <div class="error-card" role="alert">
+    <p>{message}</p>
+    <button type="button" aria-label="Dismiss error" onclick={dismissError}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6m0-6-6 6" /></svg>
+    </button>
+  </div>
+{/snippet}
 
 <main class="panel">
   <header class="titlebar" data-tauri-drag-region>
@@ -934,7 +979,7 @@
               <p class="lede">{startupFailure.remedy}</p>
             </div>
             <p class="detail-block">{startupFailure.message}</p>
-            {#if errorMessage}<p class="inline-error">{errorMessage}</p>{/if}
+            {#if errorFor("startup")}{@render errorCard(errorFor("startup"))}{/if}
             <div class="blocked-actions">
               {#if startupFailure.resettableFile}
                 <button
@@ -999,7 +1044,7 @@
                   {/each}
                 </select>
               {/if}
-              {#if errorMessage}<p class="inline-error">{errorMessage}</p>{/if}
+              {#if errorFor("recovery")}{@render errorCard(errorFor("recovery"))}{/if}
               <button class="primary" type="submit" disabled={setupBusy || !apiKey.trim()}>
                 {setupBusy ? "Validating key" : "Save API key"}
               </button>
@@ -1045,7 +1090,7 @@
                 <small>Check connectivity and the stored API-key profile, then retry.</small>
               </div>
             {/if}
-            {#if errorMessage}<p class="inline-error">{errorMessage}</p>{/if}
+            {#if errorFor("setup")}{@render errorCard(errorFor("setup"))}{/if}
             <div class="recovery-actions">
               <button
                 class="secondary-button"
@@ -1208,7 +1253,7 @@
                   </strong>
                 </div>
               {/if}
-              {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
+              {#if errorFor("idle")}{@render errorCard(errorFor("idle"))}{/if}
               <div class="account-row">
                 <span>RunPod key</span>
                 <select
@@ -1476,7 +1521,7 @@
                     <button type="button" onclick={() => addCustomPreset(true)}>Continue anyway</button>
                   </div>
                 {/if}
-                {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
+                {#if errorFor("manage")}{@render errorCard(errorFor("manage"))}{/if}
                 <button
                   class="secondary-button"
                   type="submit"
@@ -1684,7 +1729,7 @@
               {endpointCopied ? "OpenAI config copied" : "Copy OpenAI-compatible config"}
             </button>
 
-            {#if errorMessage}<p class="inline-error compact">{errorMessage}</p>{/if}
+            {#if errorFor("running")}{@render errorCard(errorFor("running"))}{/if}
             <button
               class:holding={holdingStop}
               class="stop-button"

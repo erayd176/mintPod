@@ -328,16 +328,63 @@ button:disabled {
 
 .inline-error {
   margin: 2px 0;
+  overflow-wrap: anywhere;
   color: #ef888b;
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 1.4;
+  user-select: text;
 }
 
-.inline-error.compact {
+/* RunPod's placement and capacity errors carry the only useful diagnosis a
+   user gets, so the card wraps and scrolls instead of truncating. */
+.error-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  align-items: start;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid #5a2a2d;
+  border-radius: 8px;
+  background: #1d1113;
+}
+
+.error-card p {
+  max-height: 92px;
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  color: #ef9598;
+  font-size: 9.5px;
+  line-height: 1.45;
+  scrollbar-color: #5a3a3d transparent;
+  scrollbar-width: thin;
+  user-select: text;
+}
+
+.error-card button {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #a8757a;
+  background: transparent;
+  place-items: center;
+}
+
+.error-card button:hover {
+  color: #f0a9ac;
+  background: rgb(239 100 104 / 12%);
+}
+
+.error-card button svg {
+  width: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
 }
 
 .idle-layout,
