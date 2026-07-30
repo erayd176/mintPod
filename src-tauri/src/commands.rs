@@ -71,6 +71,14 @@ pub struct SessionStoppedEvent {
     history_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupProgressEvent {
+    attempt: u8,
+    attempts: u8,
+    retrying_after: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryView {
@@ -1134,7 +1142,7 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
     let Some(active) = state.take_running(pod_id).await else {
         return Ok(());
     };
-    if let Err(error) = terminate_with_retry(&active.runpod, pod_id).await {
+    if let Err(error) = terminate_with_retry(&active.runpod, pod_id, Some(app)).await {
         state.restore_running(active).await;
         return Err(error);
     }
@@ -1189,14 +1197,30 @@ async fn finalize_session(app: &AppHandle, pod_id: &str, reason: StopReason) -> 
     Ok(())
 }
 
-async fn terminate_with_retry(runpod: &RunpodClient, pod_id: &str) -> Result<(), String> {
+const TERMINATE_ATTEMPTS: u8 = 3;
+
+async fn terminate_with_retry(
+    runpod: &RunpodClient,
+    pod_id: &str,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
     let mut last_error = None;
-    for attempt in 0..3 {
+    for attempt in 0..TERMINATE_ATTEMPTS {
+        if let Some(app) = app {
+            let _ = app.emit(
+                "session-cleanup-progress",
+                CleanupProgressEvent {
+                    attempt: attempt + 1,
+                    attempts: TERMINATE_ATTEMPTS,
+                    retrying_after: last_error.clone(),
+                },
+            );
+        }
         match runpod.terminate_pod(pod_id).await {
             Ok(()) => return Ok(()),
             Err(error) => last_error = Some(error.to_string()),
         }
-        if attempt < 2 {
+        if attempt + 1 < TERMINATE_ATTEMPTS {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
@@ -1223,7 +1247,7 @@ async fn cleanup_recorded_session(
         .map_err(|error| error.to_string())?;
     match resolve_journal_pod(&runpod, &mut journal, &state.session_journal_path).await? {
         Some(pod) => {
-            if let Err(error) = terminate_with_retry(&runpod, &pod.id).await {
+            if let Err(error) = terminate_with_retry(&runpod, &pod.id, None).await {
                 journal.last_error = Some(error.clone());
                 let _ = SessionJournalStore::save(&state.session_journal_path, &journal);
                 return Err(error);
@@ -1321,6 +1345,9 @@ pub(crate) async fn shutdown_for_exit(app: AppHandle) -> bool {
             }
             ExitAction::CancelLaunch => tokio::time::sleep(Duration::from_millis(250)).await,
             ExitAction::Stop(pod_id) => {
+                // Closing the window blocks on termination. Say so, rather than
+                // leaving the window apparently frozen.
+                let _ = app.emit("session-cleanup-started", ());
                 if let Err(error) = finalize_session(&app, &pod_id, StopReason::Manual).await {
                     let _ = app.emit("session-cleanup-error", error);
                     return false;

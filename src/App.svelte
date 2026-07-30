@@ -13,7 +13,8 @@
     | "idle"
     | "manage"
     | "launching"
-    | "running";
+    | "running"
+    | "shuttingDown";
   type BudgetMode = "time" | "cost";
   type ErrorScope = "startup" | "setup" | "recovery" | "idle" | "manage" | "running";
   type LaunchStage =
@@ -182,6 +183,12 @@
     historyError: string | null;
   }
 
+  interface CleanupProgress {
+    attempt: number;
+    attempts: number;
+    retryingAfter: string | null;
+  }
+
   interface HistoryEntry {
     presetId: string;
     modelLabel: string;
@@ -272,6 +279,7 @@
   let endpointCopied = false;
   let startupFailure: StartupFailure | null = null;
   let startupBusy = "";
+  let cleanupProgress: CleanupProgress | null = null;
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: selectedGpuTier =
@@ -293,10 +301,23 @@
     void listen<SessionStoppedEvent>("session-stopped", ({ payload }) => {
       session = null;
       telemetry = null;
+      cleanupProgress = null;
       screen = "idle";
       if (payload.historyError) fail(payload.historyError);
       void refreshHistory();
       void refreshCache();
+    }).then((dispose) => {
+      disposers.push(dispose);
+    });
+    void listen("session-cleanup-started", () => {
+      cleanupProgress = null;
+      dismissError();
+      screen = "shuttingDown";
+    }).then((dispose) => {
+      disposers.push(dispose);
+    });
+    void listen<CleanupProgress>("session-cleanup-progress", ({ payload }) => {
+      cleanupProgress = payload;
     }).then((dispose) => {
       disposers.push(dispose);
     });
@@ -921,6 +942,7 @@
         return "manage";
       case "launching":
       case "running":
+      case "shuttingDown":
         return "running";
       default:
         return "idle";
@@ -1783,6 +1805,44 @@
                     : "Hold to end session"}</span
               >
             </button>
+          </div>
+        {:else if screen === "shuttingDown"}
+          <div class="shutdown-layout" aria-live="polite">
+            <div>
+              <p class="eyebrow">Closing mintPod</p>
+              <h1>Ending paid compute</h1>
+              <p class="lede">
+                mintPod is terminating the GPU before it closes. Keep this machine awake and
+                online until it finishes.
+              </p>
+            </div>
+            <div class="shutdown-status">
+              {#if errorFor("running")}
+                <span class="shutdown-icon">
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 4.5v5m0 2.2v.3" />
+                  </svg>
+                </span>
+                <span>
+                  <strong>Termination did not succeed</strong>
+                  <small>Verify in the RunPod console that no pod is still running.</small>
+                </span>
+              {:else}
+                <span class="loader"></span>
+                <span>
+                  <strong>Terminating pod</strong>
+                  <small>
+                    {cleanupProgress
+                      ? `Attempt ${cleanupProgress.attempt} of ${cleanupProgress.attempts}`
+                      : "Contacting RunPod"}
+                  </small>
+                </span>
+              {/if}
+            </div>
+            {#if cleanupProgress?.retryingAfter}
+              <p class="inline-error">{cleanupProgress.retryingAfter}</p>
+            {/if}
+            {#if errorFor("running")}{@render errorCard(errorFor("running"))}{/if}
           </div>
         {/if}
       </section>

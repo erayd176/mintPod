@@ -247,6 +247,62 @@ h1 {
   margin-top: auto;
 }
 
+.shutdown-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  padding: 10px 4px 3px;
+}
+
+.shutdown-status {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid #24282e;
+  border-radius: 9px;
+  background: #111419;
+}
+
+.shutdown-status > span:last-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.shutdown-status strong {
+  color: #dfe1dc;
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
+.shutdown-status small {
+  color: #6e747c;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.shutdown-icon {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #5a2a2d;
+  border-radius: 50%;
+  color: #ef9598;
+  place-items: center;
+}
+
+.shutdown-icon svg {
+  width: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
+}
+
 .setup h1 {
   font-size: 26px;
 }
