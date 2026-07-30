@@ -57,6 +57,8 @@ pub struct RunningSession {
     pub remote_url: String,
     pub started_at_epoch_ms: u64,
     pub cost_per_hr_usd: f64,
+    #[serde(skip_serializing)]
+    pub remote_token: String,
 }
 
 #[derive(Debug, Error)]
@@ -84,6 +86,8 @@ impl LaunchOrchestrator {
         &self,
         preset: Preset,
         network_volume: crate::runpod::NetworkVolume,
+        remote_token: String,
+        context_length: u32,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
         send_stage(
@@ -96,6 +100,8 @@ impl LaunchOrchestrator {
             preset.gpu_type_ids.clone(),
             &network_volume,
             preset.volume_size_gb(),
+            &remote_token,
+            context_length,
         );
         let started_at_epoch_ms = now_epoch_ms();
         let pod = self.runpod.create_pod(&request).await?;
@@ -108,6 +114,7 @@ impl LaunchOrchestrator {
                 preset,
                 data_center_id,
                 started_at_epoch_ms,
+                remote_token,
                 events,
             )
             .await;
@@ -123,6 +130,7 @@ impl LaunchOrchestrator {
         pod_id: String,
         preset: Preset,
         data_center_id: String,
+        remote_token: String,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
         send_stage(&events, LaunchStage::RequestingPod, "Resuming stopped pod");
@@ -133,6 +141,7 @@ impl LaunchOrchestrator {
                 preset,
                 data_center_id,
                 now_epoch_ms(),
+                remote_token,
                 events,
             )
             .await;
@@ -149,6 +158,7 @@ impl LaunchOrchestrator {
         preset: Preset,
         requested_data_center_id: String,
         started_at_epoch_ms: u64,
+        remote_token: String,
         events: UnboundedSender<LaunchEvent>,
     ) -> Result<RunningSession, LaunchError> {
         send_stage(
@@ -173,8 +183,8 @@ impl LaunchOrchestrator {
             LaunchStage::BootingContainer,
             format!("{gpu_name} · {data_center_id} · ${cost_per_hr_usd:.2}/hr"),
         );
-        let remote_url = format!("https://{pod_id}-11434.proxy.runpod.net");
-        let ollama = OllamaClient::new(&remote_url)?;
+        let remote_url = format!("https://{pod_id}-8000.proxy.runpod.net");
+        let ollama = OllamaClient::new(&remote_url, &remote_token)?;
 
         ollama.wait_until_healthy(OLLAMA_HEALTH_ATTEMPTS).await?;
 
@@ -219,6 +229,7 @@ impl LaunchOrchestrator {
             remote_url,
             started_at_epoch_ms,
             cost_per_hr_usd,
+            remote_token,
         })
     }
 

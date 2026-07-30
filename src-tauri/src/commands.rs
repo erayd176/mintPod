@@ -11,7 +11,7 @@ use crate::{
     lifecycle::{BudgetTracker, LaunchBudget, StopReason},
     orchestrator::{LaunchEvent, LaunchOrchestrator, LaunchStage, RunningSession},
     presets::{GPU_TIERS, GpuTierView, Preset, PresetView, verified_gpu_tier},
-    proxy::LocalProxy,
+    proxy::{LocalProxy, generate_token},
     runpod::{Pod, RunpodClient, RunpodError, model_volume_preset_id},
     settings::{SettingsStore, SettingsView, VERIFIED_STORAGE_REGIONS},
     state::{ActiveSession, AppState, ExitAction, GraceSession, SessionView},
@@ -20,6 +20,7 @@ use crate::{
 const HOBBY_RANGE_WARNING: &str = "outside default hobby range, continue anyway?";
 const TERMINATION_GRACE: Duration = Duration::from_secs(5 * 60);
 const COST_RESYNC_INTERVAL_SECONDS: u64 = 30;
+const DEFAULT_CONTEXT_LENGTH: u32 = 65_536;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -380,6 +381,7 @@ async fn launch_preset_inner(
                     grace.view.session.pod_id,
                     preset.clone(),
                     region.clone(),
+                    grace.view.session.remote_token,
                     events_tx,
                 )
                 .await
@@ -397,7 +399,13 @@ async fn launch_preset_inner(
                 .await
                 .map_err(|error| error.to_string())?;
             orchestrator
-                .launch(preset.clone(), volume, events_tx)
+                .launch(
+                    preset.clone(),
+                    volume,
+                    generate_token().map_err(|error| error.to_string())?,
+                    DEFAULT_CONTEXT_LENGTH,
+                    events_tx,
+                )
                 .await
                 .map_err(|error| error.to_string())?
         }
@@ -412,7 +420,13 @@ async fn launch_preset_inner(
                 .await
                 .map_err(|error| error.to_string())?;
             orchestrator
-                .launch(preset.clone(), volume, events_tx)
+                .launch(
+                    preset.clone(),
+                    volume,
+                    generate_token().map_err(|error| error.to_string())?,
+                    DEFAULT_CONTEXT_LENGTH,
+                    events_tx,
+                )
                 .await
                 .map_err(|error| error.to_string())?
         }
@@ -420,7 +434,7 @@ async fn launch_preset_inner(
     let _ = forward.await;
     let usd_to_eur = fx_task.await.unwrap_or(1.0);
 
-    let proxy = match LocalProxy::start(&session.remote_url).await {
+    let proxy = match LocalProxy::start(&session.remote_url, &session.remote_token).await {
         Ok(proxy) => proxy,
         Err(error) => {
             cleanup_failed_launch(&runpod, &session.pod_id).await;

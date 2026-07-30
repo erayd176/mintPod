@@ -6,6 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub const RUNPOD_BASE_URL: &str = "https://rest.runpod.io/v1";
+pub const MINTPOD_RUNTIME_IMAGE: &str = "ghcr.io/erayd176/mintpod-runtime:0.1.0";
 const MODEL_VOLUME_PREFIX: &str = "mintpod-";
 const LEGACY_MODEL_VOLUME_PREFIX: &str = "podpilot-";
 
@@ -204,7 +205,7 @@ pub struct CreatePodRequest {
     pub volume_in_gb: u16,
     pub volume_mount_path: &'static str,
     pub ports: Vec<&'static str>,
-    pub env: HashMap<&'static str, &'static str>,
+    pub env: HashMap<String, String>,
 }
 
 impl CreatePodRequest {
@@ -213,10 +214,12 @@ impl CreatePodRequest {
         gpu_type_ids: Vec<String>,
         network_volume: &NetworkVolume,
         volume_in_gb: u16,
+        runtime_token: &str,
+        context_length: u32,
     ) -> Self {
         Self {
             name,
-            image_name: "ollama/ollama:0.32.3".to_owned(),
+            image_name: MINTPOD_RUNTIME_IMAGE.to_owned(),
             gpu_type_ids,
             gpu_type_priority: "custom",
             gpu_count: 1,
@@ -227,10 +230,19 @@ impl CreatePodRequest {
             network_volume_id: network_volume.id.clone(),
             volume_in_gb,
             volume_mount_path: "/root/.ollama",
-            ports: vec!["11434/http"],
+            ports: vec!["8000/http"],
             env: HashMap::from([
-                ("OLLAMA_MODELS", "/root/.ollama/models"),
-                ("OLLAMA_KEEP_ALIVE", "-1"),
+                ("MINTPOD_RUNTIME_TOKEN".to_owned(), runtime_token.to_owned()),
+                (
+                    "OLLAMA_MODELS".to_owned(),
+                    "/root/.ollama/models".to_owned(),
+                ),
+                ("OLLAMA_KEEP_ALIVE".to_owned(), "-1".to_owned()),
+                (
+                    "OLLAMA_CONTEXT_LENGTH".to_owned(),
+                    context_length.to_string(),
+                ),
+                ("OLLAMA_HOST".to_owned(), "127.0.0.1:11434".to_owned()),
             ]),
         }
     }
@@ -412,6 +424,8 @@ mod tests {
                 data_center_id: "EU-RO-1".to_owned(),
             },
             12,
+            "runtime-secret",
+            65_536,
         );
         let json = serde_json::to_value(request).unwrap();
 
@@ -419,6 +433,11 @@ mod tests {
         assert_eq!(json["volumeMountPath"], "/root/.ollama");
         assert_eq!(json["env"]["OLLAMA_MODELS"], "/root/.ollama/models");
         assert_eq!(json["env"]["OLLAMA_KEEP_ALIVE"], "-1");
+        assert_eq!(json["env"]["MINTPOD_RUNTIME_TOKEN"], "runtime-secret");
+        assert_eq!(json["env"]["OLLAMA_CONTEXT_LENGTH"], "65536");
+        assert_eq!(json["env"]["OLLAMA_HOST"], "127.0.0.1:11434");
+        assert_eq!(json["ports"], serde_json::json!(["8000/http"]));
+        assert_eq!(json["imageName"], MINTPOD_RUNTIME_IMAGE);
         assert_eq!(json["gpuTypePriority"], "custom");
         assert_eq!(json["dataCenterIds"], serde_json::json!(["EU-RO-1"]));
         assert_eq!(json["cloudType"], "SECURE");

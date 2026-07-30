@@ -30,10 +30,11 @@ pub struct PullProgress {
 pub struct OllamaClient {
     http: Client,
     base_url: String,
+    token: String,
 }
 
 impl OllamaClient {
-    pub fn new(base_url: impl Into<String>) -> Result<Self, OllamaError> {
+    pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Result<Self, OllamaError> {
         let http = Client::builder()
             .user_agent(concat!("mintPod/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
@@ -41,6 +42,7 @@ impl OllamaClient {
         Ok(Self {
             http,
             base_url: base_url.into().trim_end_matches('/').to_owned(),
+            token: token.into(),
         })
     }
 
@@ -49,6 +51,7 @@ impl OllamaClient {
             let response = self
                 .http
                 .get(format!("{}/api/version", self.base_url))
+                .bearer_auth(&self.token)
                 .timeout(Duration::from_secs(5))
                 .send()
                 .await;
@@ -64,6 +67,7 @@ impl OllamaClient {
         let response = self
             .http
             .get(format!("{}/api/tags", self.base_url))
+            .bearer_auth(&self.token)
             .timeout(Duration::from_secs(10))
             .send()
             .await?;
@@ -107,6 +111,7 @@ impl OllamaClient {
         let response = self
             .http
             .post(format!("{}/api/pull", self.base_url))
+            .bearer_auth(&self.token)
             .json(&serde_json::json!({ "model": model, "stream": true }))
             .send()
             .await?;
@@ -146,6 +151,7 @@ impl OllamaClient {
         let response = self
             .http
             .post(format!("{}/api/generate", self.base_url))
+            .bearer_auth(&self.token)
             .json(&serde_json::json!({
                 "model": model,
                 "keep_alive": -1,

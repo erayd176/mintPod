@@ -29,6 +29,7 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 struct ProxyState {
     upstream: String,
     token: Arc<str>,
+    upstream_token: Arc<str>,
     client: reqwest::Client,
     last_request_epoch_ms: Arc<AtomicU64>,
 }
@@ -54,7 +55,7 @@ struct ErrorBody<'a> {
 }
 
 impl LocalProxy {
-    pub async fn start(upstream: &str) -> Result<Self, ProxyError> {
+    pub async fn start(upstream: &str, upstream_token: &str) -> Result<Self, ProxyError> {
         let listener = TcpListener::bind(LISTEN_ADDRESS)
             .await
             .map_err(ProxyError::Bind)?;
@@ -63,6 +64,7 @@ impl LocalProxy {
         let state = ProxyState {
             upstream: upstream.trim_end_matches('/').to_owned(),
             token: Arc::from(token.as_str()),
+            upstream_token: Arc::from(upstream_token),
             client: reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -133,7 +135,10 @@ async fn forward(State(state): State<ProxyState>, request: Request<Body>) -> Res
         Ok(body) => body,
         Err(_) => return json_error(StatusCode::PAYLOAD_TOO_LARGE, "request body too large"),
     };
-    let mut outbound = state.client.request(parts.method, target);
+    let mut outbound = state
+        .client
+        .request(parts.method, target)
+        .bearer_auth(state.upstream_token.as_ref());
     for (name, value) in &parts.headers {
         if should_forward_request_header(name) {
             outbound = outbound.header(name, value);
@@ -200,7 +205,7 @@ fn json_error(status: StatusCode, message: &'static str) -> Response<Body> {
     (status, axum::Json(ErrorBody { error: message })).into_response()
 }
 
-fn generate_token() -> Result<String, ProxyError> {
+pub(crate) fn generate_token() -> Result<String, ProxyError> {
     let mut bytes = [0_u8; 32];
     getrandom::fill(&mut bytes).map_err(|error| ProxyError::Random(error.to_string()))?;
     let mut token = String::with_capacity(bytes.len() * 2);
