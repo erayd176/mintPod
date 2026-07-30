@@ -19,7 +19,7 @@ Curated profiles are compatibility contracts, not a mirror of the Ollama library
 2. Record the downloaded weight size from `ollama list`.
 3. Choose a context of at least 64,000 tokens and measure practical VRAM at that context.
 4. Copy exact RunPod GPU type IDs and rank the acceptable fallbacks.
-5. Record a conservative expected hourly rate.
+5. Record a conservative expected hourly rate in USD, matching RunPod's own quotes.
 6. Add one JSON file under `presets/` and its `include_str!` entry to `CURATED` in `src-tauri/src/presets.rs`.
 7. Start with `"verification": "candidate"`.
 8. Run all local checks and the paid matrix before changing the status to `manuallyTested`.

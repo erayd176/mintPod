@@ -850,8 +850,14 @@
     if (event.key === " " || event.key === "Enter") cancelStop();
   }
 
+  // Accrued spend and budgets are EUR; RunPod estimates and rate ceilings stay
+  // in the USD that RunPod itself quotes.
   function formatMoney(value: number, digits = 2) {
     return `€${value.toFixed(digits)}`;
+  }
+
+  function formatUsd(value: number, digits = 2) {
+    return `$${value.toFixed(digits)}`;
   }
 
   function formatDuration(totalSeconds: number) {
@@ -1158,8 +1164,10 @@
                         )}K ctx</span
                       >
                     </span>
-                    <span class="preset-cost" title="Estimated hourly compute cost"
-                      >~{formatMoney(preset.estCostPerHr)}<small>/hr</small></span
+                    <span
+                      class="preset-cost"
+                      title="Estimated RunPod Secure Cloud rate in USD per hour"
+                      >~{formatUsd(preset.estCostPerHr)}<small>/hr</small></span
                     >
                   </button>
                 {/each}
@@ -1509,7 +1517,7 @@
                 <label for="gpu-tier">GPU priority tier</label>
                 <select id="gpu-tier" bind:value={customGpuTierId} onchange={() => (customWarning = "")}>
                   {#each gpuTiers as tier}
-                    <option value={tier.id}>{tier.label} · ~{formatMoney(tier.estCostPerHr)}/hr</option>
+                    <option value={tier.id}>{tier.label} · ~{formatUsd(tier.estCostPerHr)}/hr</option>
                   {/each}
                 </select>
                 {#if selectedGpuTier}
@@ -1655,6 +1663,7 @@
                 <span>Accrued</span>
                 <strong>{formatMoney(telemetry?.accruedCostEur ?? 0, 3)}</strong>
                 <small
+                  title={`RunPod bills ${formatUsd(session.costPerHrUsd)}/hr; converted at the ECB daily reference rate`}
                   >Actual rate · {formatMoney(
                     telemetry?.costPerHrEur ?? session.costPerHrEur
                   )}/hr</small

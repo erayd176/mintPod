@@ -54,6 +54,7 @@
       }
     },
     "estCostPerHr": {
+      "description": "Conservative expected RunPod Secure Cloud rate in USD per hour.",
       "type": "number",
       "exclusiveMinimum": 0,
       "maximum": 100
