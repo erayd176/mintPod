@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -30,8 +29,15 @@ jobs:
   image:
     needs: test
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Select registry package
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/mintpod-runtime" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: github.event_name == 'push'
@@ -42,14 +48,19 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/erayd176/mintpod-runtime
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=edge,enable={{is_default_branch}}
             type=semver,pattern={{version}}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: runtime
           push: ${{ github.event_name == 'push' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
+      - name: Report immutable image
+        if: github.event_name == 'push'
+        shell: bash
+        run: echo '${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}' >> "$GITHUB_STEP_SUMMARY"

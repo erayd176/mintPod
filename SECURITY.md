@@ -17,6 +17,14 @@ mintPod therefore uses two independent credentials:
 
 Raw Ollama listens only on `127.0.0.1:11434` inside the pod. The remote gateway removes its Authorization header before forwarding to Ollama.
 
+## Runtime image trust
+
+Official builds send RunPod an immutable `ghcr.io/erayd176/mintpod-runtime@sha256:...` reference. The digest is recorded in `src-tauri/src/runpod.rs`; the corresponding gateway source, Dockerfile, and publishing workflow are part of this repository. The Dockerfile pins its Go builder and Ollama base images by digest as well.
+
+Forks can compile in their own runtime with the `MINTPOD_RUNTIME_IMAGE` build environment variable. The runtime workflow publishes to the current repository owner's GHCR namespace and reports the resulting immutable reference in its workflow summary.
+
+This override is deliberately build-time only. A runtime image is trusted code inside the pod: it can see inference traffic, access the attached model volume, and make outbound network requests. Do not build mintPod against an image you do not trust, and prefer `image@sha256:<digest>` over any mutable tag.
+
 ## Credential storage
 
 - RunPod API keys, the local gateway token, and remote session tokens use macOS Keychain, Windows Credential Manager, or Linux Secret Service through `keyring`.

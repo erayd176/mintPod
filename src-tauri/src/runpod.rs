@@ -7,7 +7,12 @@ use thiserror::Error;
 
 pub const RUNPOD_BASE_URL: &str = "https://rest.runpod.io/v1";
 pub const RUNPOD_GRAPHQL_URL: &str = "https://api.runpod.io/graphql";
-pub const MINTPOD_RUNTIME_IMAGE: &str = "ghcr.io/erayd176/mintpod-runtime:0.1.1";
+pub const MINTPOD_RUNTIME_IMAGE: &str = match option_env!("MINTPOD_RUNTIME_IMAGE") {
+    Some(image) => image,
+    None => {
+        "ghcr.io/erayd176/mintpod-runtime@sha256:1ef07585a03ba33693bf7cf1f66dd51150de72b05024c2edc81a5ca5718bcf7f"
+    }
+};
 const MODEL_VOLUME_PREFIX: &str = "mintpod-";
 const LEGACY_MODEL_VOLUME_PREFIX: &str = "podpilot-";
 

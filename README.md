@@ -61,6 +61,14 @@ Personal Ollama presets can be added under **Manage**. They are kept in `presets
 - Launch cancellation and normal window close wait for compensating pod cleanup. Termination is retried and a failed cleanup remains in the recovery journal.
 - Network Volumes are not deleted when a session ends. They can continue to incur storage charges until removed under **Manage** or in RunPod.
 
+### Why mintPod uses a runtime image
+
+Every RunPod Pod starts from a container image. mintPod's image adds the small, source-controlled gateway in [`runtime/`](runtime/) in front of Ollama so that the public endpoint requires a fresh session token while Ollama remains on pod loopback. Downloading or building the desktop app does not pull this image; RunPod pulls it when a session launches.
+
+Official builds default to the immutable image digest recorded in [`src-tauri/src/runpod.rs`](src-tauri/src/runpod.rs). The readable release tag is `ghcr.io/erayd176/mintpod-runtime:0.1.1`, but mintPod sends its digest—not the mutable tag—to RunPod. The Dockerfile also pins its Go and Ollama base images by digest.
+
+A custom runtime is fully trusted code: it can receive prompts and access the attached model volume. For that reason, mintPod has no casual runtime-image setting in the UI. Forks can intentionally select their own image at build time as described below.
+
 Important limit: time, cost, and idle enforcement run in the desktop process. A process crash is reconciled when mintPod restarts, but a powered-off or disconnected computer cannot guarantee remote termination. Always keep a RunPod console fallback and verify there are no running pods after a machine or network failure. See [SECURITY.md](SECURITY.md) for the threat model.
 
 <img width="426" height="556" alt="image" src="https://github.com/user-attachments/assets/df46d313-19b5-48b2-a696-76543479ac87" />
@@ -107,7 +115,20 @@ npm ci
 npm run tauri -- dev
 ```
 
-The app expects the pinned `ghcr.io/erayd176/mintpod-runtime:0.1.1` image. A release tag must publish that runtime image before its desktop installers are distributed.
+By default, source builds use the same immutable runtime digest as the official `0.1.1` build.
+
+### Forks and self-built runtimes
+
+The runtime-image workflow publishes to `ghcr.io/<repository-owner>/mintpod-runtime`, so a fork does not need to publish under the original maintainer's account. After publishing a version tag, copy the `image@sha256:...` reference from the workflow summary and build the desktop app with it:
+
+```sh
+MINTPOD_RUNTIME_IMAGE='ghcr.io/<repository-owner>/mintpod-runtime@sha256:<digest>' \
+npm run tauri -- build
+```
+
+The override is compiled into that desktop build; it is not read from the user's environment when the app runs. Prefer an immutable digest, and make the GHCR package public so RunPod can pull it without registry credentials. The same override works with `npm run tauri -- dev` while developing a fork.
+
+For an official release, publish and test the runtime first, capture its digest, and use that exact reference for every desktop installer. Never distribute installers that refer only to `edge`, `latest`, or a version tag.
 
 ## Cost and placement behavior
 
