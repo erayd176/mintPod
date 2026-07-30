@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -37,13 +37,29 @@ struct GatewayState {
     upstream: Arc<RwLock<Option<Upstream>>>,
     local_token: Arc<str>,
     client: reqwest::Client,
-    last_inference_epoch_ms: Arc<AtomicU64>,
+    activity: Arc<Activity>,
+}
+
+/// Inference activity used by the idle timeout.
+///
+/// A single agent generation can stream for longer than the idle timeout, so
+/// requests are counted while they are in flight instead of only being stamped
+/// when they arrive.
+struct Activity {
+    last_epoch_ms: AtomicU64,
+    in_flight: AtomicI64,
+}
+
+/// Keeps its request counted as in flight until the response body is finished
+/// or dropped.
+struct ActivityGuard {
+    activity: Arc<Activity>,
 }
 
 pub struct LocalGateway {
     local_token: String,
     upstream: Arc<RwLock<Option<Upstream>>>,
-    last_inference_epoch_ms: Arc<AtomicU64>,
+    activity: Arc<Activity>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -61,13 +77,49 @@ struct ErrorBody<'a> {
     error: &'a str,
 }
 
+impl Activity {
+    fn new() -> Self {
+        Self {
+            last_epoch_ms: AtomicU64::new(now_epoch_ms()),
+            in_flight: AtomicI64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_epoch_ms.store(now_epoch_ms(), Ordering::Relaxed);
+    }
+
+    fn begin(self: &Arc<Self>) -> ActivityGuard {
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
+        self.touch();
+        ActivityGuard {
+            activity: Arc::clone(self),
+        }
+    }
+
+    fn last_epoch_ms(&self) -> u64 {
+        if self.in_flight.load(Ordering::Acquire) > 0 {
+            now_epoch_ms()
+        } else {
+            self.last_epoch_ms.load(Ordering::Relaxed)
+        }
+    }
+}
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.activity.touch();
+        self.activity.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl LocalGateway {
     pub async fn start(local_token: String) -> Result<Self, GatewayError> {
         let listener = TcpListener::bind(LISTEN_ADDRESS)
             .await
             .map_err(GatewayError::Bind)?;
         let upstream = Arc::new(RwLock::new(None));
-        let last_inference_epoch_ms = Arc::new(AtomicU64::new(now_epoch_ms()));
+        let activity = Arc::new(Activity::new());
         let state = GatewayState {
             upstream: Arc::clone(&upstream),
             local_token: Arc::from(local_token.as_str()),
@@ -75,7 +127,7 @@ impl LocalGateway {
                 .no_proxy()
                 .build()
                 .expect("valid local gateway HTTP client"),
-            last_inference_epoch_ms: Arc::clone(&last_inference_epoch_ms),
+            activity: Arc::clone(&activity),
         };
         let router = Router::new()
             .route("/{*path}", any(forward))
@@ -93,7 +145,7 @@ impl LocalGateway {
         Ok(Self {
             local_token,
             upstream,
-            last_inference_epoch_ms,
+            activity,
             shutdown: Some(shutdown),
             task: Some(task),
         })
@@ -111,8 +163,7 @@ impl LocalGateway {
             url: upstream_url.trim_end_matches('/').to_owned(),
             token: Arc::from(upstream_token),
         });
-        self.last_inference_epoch_ms
-            .store(now_epoch_ms(), Ordering::Relaxed);
+        self.activity.touch();
         Ok(())
     }
 
@@ -125,7 +176,7 @@ impl LocalGateway {
     }
 
     pub fn last_inference_epoch_ms(&self) -> u64 {
-        self.last_inference_epoch_ms.load(Ordering::Relaxed)
+        self.activity.last_epoch_ms()
     }
 
     pub fn is_connected(&self) -> Result<bool, GatewayError> {
@@ -167,11 +218,7 @@ async fn forward(State(state): State<GatewayState>, request: Request<Body>) -> R
         );
     };
 
-    if is_inference_path(request.uri().path()) {
-        state
-            .last_inference_epoch_ms
-            .store(now_epoch_ms(), Ordering::Relaxed);
-    }
+    let activity = is_inference_path(request.uri().path()).then(|| state.activity.begin());
     let (parts, body) = request.into_parts();
     let target = target_url(&upstream.url, parts.uri.path_and_query());
     let request_body = match to_bytes(body, MAX_REQUEST_BYTES).await {
@@ -194,9 +241,12 @@ async fn forward(State(state): State<GatewayState>, request: Request<Body>) -> R
     };
     let status = upstream.status();
     let headers = upstream.headers().clone();
-    let stream = upstream
-        .bytes_stream()
-        .map(|chunk| chunk.map_err(|error| std::io::Error::other(error.to_string())));
+    let stream = upstream.bytes_stream().map(move |chunk| {
+        if let Some(activity) = activity.as_ref() {
+            activity.activity.touch();
+        }
+        chunk.map_err(|error| std::io::Error::other(error.to_string()))
+    });
     let mut response = Response::new(Body::from_stream(stream));
     *response.status_mut() = status;
     copy_response_headers(&headers, response.headers_mut());
@@ -281,6 +331,39 @@ mod tests {
         assert!(is_inference_path("/api/generate"));
         assert!(!is_inference_path("/v1/models"));
         assert!(!is_inference_path("/api/tags"));
+    }
+
+    #[test]
+    fn a_streaming_request_stays_active_however_long_it_runs() {
+        let activity = Arc::new(Activity::new());
+        activity.last_epoch_ms.store(0, Ordering::Relaxed);
+        let guard = activity.begin();
+        activity.last_epoch_ms.store(0, Ordering::Relaxed);
+
+        assert!(
+            activity.last_epoch_ms() > 0,
+            "an in-flight generation must never look idle"
+        );
+
+        drop(guard);
+        assert_eq!(activity.in_flight.load(Ordering::Acquire), 0);
+        assert!(
+            activity.last_epoch_ms() > 0,
+            "finishing a generation restarts the idle countdown"
+        );
+    }
+
+    #[test]
+    fn concurrent_requests_release_activity_only_when_all_finish() {
+        let activity = Arc::new(Activity::new());
+        let first = activity.begin();
+        let second = activity.begin();
+
+        drop(first);
+        assert_eq!(activity.in_flight.load(Ordering::Acquire), 1);
+
+        drop(second);
+        assert_eq!(activity.in_flight.load(Ordering::Acquire), 0);
     }
 
     #[test]
