@@ -347,9 +347,9 @@ fn command_exists(binary: &str) -> bool {
         }
         #[cfg(target_os = "windows")]
         {
-            return ["exe", "cmd", "bat"]
+            ["exe", "cmd", "bat"]
                 .iter()
-                .any(|extension| directory.join(format!("{binary}.{extension}")).is_file());
+                .any(|extension| directory.join(format!("{binary}.{extension}")).is_file())
         }
         #[cfg(not(target_os = "windows"))]
         false
