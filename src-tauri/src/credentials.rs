@@ -66,6 +66,10 @@ pub enum CredentialError {
 pub struct CredentialStore;
 
 impl CredentialStore {
+    pub fn validate_index_file(path: &Path) -> Result<(), CredentialError> {
+        read_index(path).map(|_| ())
+    }
+
     pub fn list_profiles(path: &Path) -> Result<Vec<CredentialProfile>, CredentialError> {
         let index = load_with_legacy(path)?;
         Ok(profile_views(&index))

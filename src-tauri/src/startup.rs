@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     credentials::CredentialStore,
+    history,
     presets::PresetCatalog,
     proxy::LocalGateway,
     settings::SettingsStore,
@@ -17,7 +18,14 @@ use crate::{
 
 pub const USER_PRESETS_FILE: &str = "presets.user.json";
 pub const SETTINGS_FILE: &str = "settings.json";
-const RESETTABLE_FILES: &[&str] = &[USER_PRESETS_FILE, SETTINGS_FILE];
+pub const CREDENTIAL_INDEX_FILE: &str = "api-keys.json";
+pub const HISTORY_FILE: &str = "session-history.json";
+const RESETTABLE_FILES: &[&str] = &[
+    USER_PRESETS_FILE,
+    SETTINGS_FILE,
+    CREDENTIAL_INDEX_FILE,
+    HISTORY_FILE,
+];
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +35,8 @@ pub enum StartupFailureKind {
     LocalPort,
     UserPresets,
     Settings,
+    CredentialIndex,
+    SessionHistory,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +78,17 @@ impl StartupFailure {
                  repair the file by hand and retry. A reset keeps the old file as \
                  settings.json.broken.",
                 Some(SETTINGS_FILE),
+            ),
+            StartupFailureKind::CredentialIndex => (
+                "The API-key profile index is damaged. Reset it to forget the profile list, then \
+                 add your RunPod key again. The rejected file is preserved and secrets already in \
+                 the operating-system keychain are not copied or deleted.",
+                Some(CREDENTIAL_INDEX_FILE),
+            ),
+            StartupFailureKind::SessionHistory => (
+                "The local session history is damaged. Reset it to start a new history. The \
+                 rejected file is preserved as session-history.json.broken.",
+                Some(HISTORY_FILE),
             ),
         };
         Self {
@@ -140,6 +161,12 @@ fn attempt(app: &AppHandle) -> Result<(), StartupFailure> {
         .map_err(|error| StartupFailure::new(StartupFailureKind::UserPresets, error.to_string()))?;
     SettingsStore::load(&config_dir.join(SETTINGS_FILE))
         .map_err(|error| StartupFailure::new(StartupFailureKind::Settings, error.to_string()))?;
+    CredentialStore::validate_index_file(&config_dir.join(CREDENTIAL_INDEX_FILE)).map_err(
+        |error| StartupFailure::new(StartupFailureKind::CredentialIndex, error.to_string()),
+    )?;
+    history::recent(&config_dir.join(HISTORY_FILE), 1).map_err(|error| {
+        StartupFailure::new(StartupFailureKind::SessionHistory, error.to_string())
+    })?;
 
     let gateway_token = CredentialStore::local_gateway_token()
         .map_err(|error| StartupFailure::new(StartupFailureKind::Keychain, error.to_string()))?;
@@ -181,9 +208,23 @@ fn move_aside(path: &Path) -> Result<(), std::io::Error> {
     if !path.exists() {
         return Ok(());
     }
-    let mut backup = path.as_os_str().to_owned();
-    backup.push(".broken");
-    fs::rename(path, PathBuf::from(backup))
+    fs::rename(path, available_backup_path(path))
+}
+
+fn available_backup_path(path: &Path) -> PathBuf {
+    for suffix in 0_u32.. {
+        let mut backup = path.as_os_str().to_owned();
+        if suffix == 0 {
+            backup.push(".broken");
+        } else {
+            backup.push(format!(".broken.{suffix}"));
+        }
+        let backup = PathBuf::from(backup);
+        if !backup.exists() {
+            return backup;
+        }
+    }
+    unreachable!("the backup suffix space cannot be exhausted")
 }
 
 #[cfg(test)]
@@ -210,7 +251,9 @@ mod tests {
     #[test]
     fn only_known_documents_can_be_reset() {
         assert!(RESETTABLE_FILES.contains(&SETTINGS_FILE));
-        assert!(!RESETTABLE_FILES.contains(&"api-keys.json"));
+        assert!(RESETTABLE_FILES.contains(&CREDENTIAL_INDEX_FILE));
+        assert!(RESETTABLE_FILES.contains(&HISTORY_FILE));
+        assert!(!RESETTABLE_FILES.contains(&"active-session.json"));
         assert!(!RESETTABLE_FILES.contains(&"../settings.json"));
     }
 
@@ -232,6 +275,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(directory.join("settings.json.broken")).unwrap(),
             "not json"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn resetting_never_overwrites_an_earlier_backup() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("mintpod-backup-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(HISTORY_FILE);
+        fs::write(&path, "new broken history").unwrap();
+        fs::write(
+            directory.join("session-history.json.broken"),
+            "older backup",
+        )
+        .unwrap();
+
+        move_aside(&path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(directory.join("session-history.json.broken")).unwrap(),
+            "older backup"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("session-history.json.broken.1")).unwrap(),
+            "new broken history"
         );
         fs::remove_dir_all(directory).unwrap();
     }
