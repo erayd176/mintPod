@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a small improvement to the model-to-coding-agent workflow.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        mintPod is intentionally narrow. Requests are most useful when they simplify or harden the path from choosing one model to ending one paid GPU session.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What part of the current workflow is difficult, unclear, or unreliable?
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Smallest useful outcome
+      description: Describe the user-visible result rather than a preferred implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Current workaround
+      description: What do you do today, if anything?
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This fits a single-session coding-model launcher rather than a general RunPod console or chat application.
+          required: true

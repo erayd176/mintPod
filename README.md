@@ -4,7 +4,27 @@ Launch a private coding model on RunPod, use it from your local agent tools, and
 
 mintPod is a focused Tauri desktop app for developers who want a larger open model than their machine can run without repeatedly rebuilding RunPod pods, copying endpoint URLs, editing tool configuration, or wondering whether a GPU was left billing.
 
-> **Release status:** pre-release `0.1.1`. The lifecycle and integration paths are covered by local tests. The four shipped model/GPU profiles are deliberately marked **Candidate** until each passes the paid contract matrix on real RunPod capacity.
+[![CI](https://github.com/erayd176/mintPod/actions/workflows/ci.yml/badge.svg)](https://github.com/erayd176/mintPod/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-72d49b.svg)](LICENSE)
+
+> **Hobby pre-release:** the current version is `0.1.1` and is distributed as source code; there are no signed installers yet. The lifecycle and integration paths are covered by automated tests, but the four shipped model/GPU profiles remain **Candidate** until each passes the paid contract matrix on real RunPod capacity.
+
+> **Real-cost warning:** launching creates billable RunPod resources. Start with a conservative time or EUR budget, keep the RunPod console available, and verify abnormal shutdowns there. Persistent Network Volumes survive sessions and can continue to incur storage charges.
+
+## Quick start from source
+
+You need Node.js 20.19+, Rust 1.88+, the [Tauri 2 system dependencies](https://v2.tauri.app/start/prerequisites/) for your OS, and a RunPod account with billing enabled.
+
+```sh
+git clone https://github.com/erayd176/mintPod.git
+cd mintPod
+npm ci
+npm run tauri -- dev
+```
+
+On first start, add a named RunPod API key, keep the budget conservative, choose **Check GPU availability**, and review the exact acceptable GPUs and live rates before launching. Pi, OpenCode, and Aider are optional; any OpenAI-compatible client can use the copied session configuration.
+
+For a local production bundle, run `npm run tauri -- build`. See the [detailed source-build requirements](#detailed-source-build-requirements) and the platform-specific Tauri prerequisites before reporting build failures.
 
 ## The workflow
 
@@ -71,10 +91,10 @@ A custom runtime is fully trusted code: it can receive prompts and access the at
 
 Important limit: time, cost, and idle enforcement run in the desktop process. A process crash is reconciled when mintPod restarts, but a powered-off or disconnected computer cannot guarantee remote termination. Always keep a RunPod console fallback and verify there are no running pods after a machine or network failure. See [SECURITY.md](SECURITY.md) for the threat model.
 
-<img width="426" height="556" alt="image" src="https://github.com/user-attachments/assets/df46d313-19b5-48b2-a696-76543479ac87" />
+<img width="426" height="556" alt="mintPod model selection and launch-budget screen" src="https://github.com/user-attachments/assets/df46d313-19b5-48b2-a696-76543479ac87" />
 
 
-## Requirements
+## Detailed source-build requirements
 
 For end users:
 
@@ -106,13 +126,19 @@ sudo apt install \
 
 See the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other operating systems.
 
-## Build and run
+## Build commands
 
 ```sh
 git clone https://github.com/erayd176/mintPod.git
 cd mintPod
 npm ci
 npm run tauri -- dev
+```
+
+Create optimized platform bundles under `src-tauri/target/release/bundle/` with:
+
+```sh
+npm run tauri -- build
 ```
 
 By default, source builds use the same immutable runtime digest as the official `0.1.1` build.
@@ -166,6 +192,8 @@ The Rust core owns RunPod calls, lifecycle, persistence, cost enforcement, the l
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md), especially the paid profile verification requirements. Security reports belong in [private vulnerability reporting](https://github.com/erayd176/mintPod/security/advisories/new), not a public issue.
+
+For maintainers preparing a tag or public announcement, use the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md). User-visible changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

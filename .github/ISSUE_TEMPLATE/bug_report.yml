@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible mintPod problem without including secrets or RunPod identifiers.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve mintPod. Before filing, end any paid pod you no longer need and remove credentials, pod IDs, machine IDs, and private configuration from everything you paste.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Use the app version, tag, or `git rev-parse --short HEAD`.
+      placeholder: v0.1.1 or abc1234
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include what you expected and what happened instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start mintPod
+        2. Select ...
+        3. Click ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: stage
+    attributes:
+      label: Session stage and visible error
+      description: Copy the error text, but redact credentials, resource IDs, local paths, and private model/config data.
+      placeholder: GPU offline, requesting pod, pulling model, running, cleanup, or recovery
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Safe diagnostics
+      description: If the app opens, use Manage → Copy safe diagnostics. Review the JSON before pasting it.
+      render: json
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I verified in the RunPod console whether a paid pod is still running.
+          required: true
+        - label: I removed API keys, bearer tokens, pod/machine/resource IDs, and private configuration from this report.
+          required: true
+
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Profile status
+      options:
+        - label: I understand that curated model/GPU profiles marked Candidate have not completed the paid validation matrix.
+          required: true

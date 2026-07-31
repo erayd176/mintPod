@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/erayd176/mintPod/security/advisories/new
+    about: Do not publish credentials, resource identifiers, private configuration, or exploitable security details in an issue.
+  - name: RunPod service and billing support
+    url: https://www.runpod.io/contact
+    about: Use RunPod support for account, billing, capacity, and platform incidents that mintPod does not control.

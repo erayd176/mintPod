@@ -104,3 +104,4 @@ Never post API keys, gateway tokens, pod IDs, machine IDs, raw diagnostics conta
 - JSON persistence is atomic and malformed user data fails safely.
 - Rust tests, runtime tests, Svelte checks, linting, and the production frontend build pass.
 - Platform-specific behavior was tested on that platform or called out explicitly.
+- User-visible changes are recorded under **Unreleased** in `CHANGELOG.md`.
