@@ -1056,6 +1056,11 @@ button:disabled {
   vertical-align: 1px;
 }
 
+.tag.candidate {
+  color: #d8b77d;
+  background: rgb(216 183 125 / 10%);
+}
+
 .preset-cost {
   color: #c7cac5;
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
@@ -1127,52 +1132,244 @@ button:disabled {
   gap: 8px;
 }
 
-.rate-note {
+.rate-context {
   justify-self: end;
-  padding: 0;
-  overflow: hidden;
-  border: 0;
   color: #60666e;
-  background: transparent;
   font-size: 8px;
   text-align: right;
+}
+
+.availability-check {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 7px 9px;
+  border: 1px solid #30353c;
+  border-radius: 9px;
+  text-align: left;
+  background: #15191e;
+}
+
+.availability-check:hover:not(:disabled) {
+  border-color: rgb(114 212 155 / 48%);
+  background: #171d20;
+}
+
+.availability-check.checked {
+  border-color: rgb(114 212 155 / 31%);
+  background: linear-gradient(90deg, rgb(114 212 155 / 7%), #15191e);
+}
+
+.availability-check.unavailable {
+  border-color: #5d4a26;
+  background: #1b1710;
+}
+
+.availability-icon {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  border-radius: 7px;
+  color: var(--green);
+  background: rgb(114 212 155 / 10%);
+  place-items: center;
+}
+
+.availability-check.unavailable .availability-icon {
+  color: #d6b675;
+  background: rgb(216 183 125 / 10%);
+}
+
+.availability-icon svg {
+  width: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+}
+
+.availability-icon .stage-spinner {
+  width: 12px;
+  height: 12px;
+}
+
+.availability-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.availability-copy strong {
+  overflow: hidden;
+  color: #d8ddd7;
+  font-size: 9.5px;
+  font-weight: 640;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rate-note:hover:not(:disabled) {
-  color: var(--green);
+.availability-copy small {
+  overflow: hidden;
+  color: #666d75;
+  font-size: 7.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.preflight-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 8px;
+.availability-action {
+  color: #91bd9f;
+  font-size: 8px;
+  font-weight: 620;
+}
+
+.availability-panel {
+  padding: 8px;
   border: 1px solid rgb(114 212 155 / 18%);
-  border-radius: 7px;
+  border-radius: 9px;
   color: #6f7771;
   background: rgb(114 212 155 / 5%);
   font-size: 8px;
 }
 
-.preflight-summary strong {
-  overflow: hidden;
-  color: #a8c9b4;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.availability-context {
+  margin: 0 0 7px;
+  color: #6d756f;
+  font-size: 7.5px;
+  line-height: 1.4;
 }
 
-.preflight-summary.unavailable {
+.availability-panel.unavailable {
   border-color: #5d4a26;
   color: #9b875f;
   background: #1c1811;
 }
 
-.preflight-summary.unavailable strong {
+.gpu-results {
+  display: grid;
+  gap: 3px;
+  max-height: 112px;
+  overflow-y: auto;
+  scrollbar-color: #365443 transparent;
+  scrollbar-width: thin;
+}
+
+.gpu-result {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 33px;
+  padding: 4px 6px 4px 4px;
+  border: 1px solid rgb(114 212 155 / 11%);
+  border-radius: 7px;
+  background: rgb(13 20 16 / 45%);
+}
+
+.gpu-rank {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  color: var(--green);
+  background: rgb(114 212 155 / 10%);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  place-items: center;
+}
+
+.gpu-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gpu-copy strong {
+  overflow: hidden;
+  color: #bec9c0;
+  font-size: 8.5px;
+  font-weight: 580;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpu-copy small {
+  color: #65726a;
+  font-size: 7px;
+}
+
+.gpu-rate {
+  color: #9fbea9;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.no-gpu-result {
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid rgb(216 183 125 / 14%);
+  border-radius: 7px;
+  background: rgb(216 183 125 / 4%);
+}
+
+.no-gpu-result strong {
   color: #d6b675;
+  font-size: 8.5px;
+  font-weight: 600;
+}
+
+.no-gpu-result small {
+  color: #8d7d5d;
+  font-size: 7.5px;
+}
+
+.rejected-gpus {
+  margin-top: 6px;
+  color: #666d75;
+}
+
+.rejected-gpus summary {
+  cursor: pointer;
+  font-size: 7.5px;
+  list-style-position: inside;
+}
+
+.rejected-gpus[open] summary {
+  margin-bottom: 5px;
+  color: #939991;
+}
+
+.rejection-list {
+  display: grid;
+  gap: 5px;
+  max-height: 90px;
+  padding-left: 9px;
+  overflow-y: auto;
+  scrollbar-color: #45423a transparent;
+  scrollbar-width: thin;
+}
+
+.rejection-list p {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+}
+
+.rejection-list strong {
+  color: #979c95;
+  font-size: 7.5px;
+  font-weight: 570;
+}
+
+.rejection-list span {
+  color: #716e67;
+  font-size: 7px;
+  line-height: 1.35;
 }
 
 .segmented {

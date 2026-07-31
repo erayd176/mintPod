@@ -45,7 +45,9 @@
       | "keychain"
       | "localPort"
       | "userPresets"
-      | "settings";
+      | "settings"
+      | "credentialIndex"
+      | "sessionHistory";
     message: string;
     remedy: string;
     resettableFile: string | null;
@@ -83,21 +85,23 @@
     lastError: string | null;
   }
 
+  interface GpuCandidate {
+    id: string;
+    displayName: string;
+    memoryInGb: number;
+    stockStatus: string;
+    hourlyRateUsd: number | null;
+    eligible: boolean;
+    reason: string | null;
+  }
+
   interface GpuPreflight {
     presetId: string;
     dataCenterId: string;
     maxHourlyRateUsd: number;
     regionScopedInventory: boolean;
     usableGpuTypeIds: string[];
-    candidates: Array<{
-      id: string;
-      displayName: string;
-      memoryInGb: number;
-      stockStatus: string;
-      hourlyRateUsd: number | null;
-      eligible: boolean;
-      reason: string | null;
-    }>;
+    candidates: GpuCandidate[];
   }
 
   interface ConnectionDetails {
@@ -224,7 +228,9 @@
     keychain: "The OS keychain is unavailable",
     localPort: "Local port 11435 is taken",
     userPresets: "Your preset file cannot be read",
-    settings: "Your settings file cannot be read"
+    settings: "Your settings file cannot be read",
+    credentialIndex: "Your API-key profiles cannot be read",
+    sessionHistory: "Your session history cannot be read"
   };
 
   let screen: Screen = "loading";
@@ -280,10 +286,13 @@
   let startupFailure: StartupFailure | null = null;
   let startupBusy = "";
   let cleanupProgress: CleanupProgress | null = null;
+  let closingApp = false;
 
   $: selectedPreset = presets.find((preset) => preset.id === selectedId) ?? null;
   $: selectedGpuTier =
     gpuTiers.find((tier) => tier.id === customGpuTierId) ?? gpuTiers[0] ?? null;
+  $: eligibleGpuCandidates = preflight?.candidates.filter((candidate) => candidate.eligible) ?? [];
+  $: rejectedGpuCandidates = preflight?.candidates.filter((candidate) => !candidate.eligible) ?? [];
 
   onMount(() => {
     const disposers: UnlistenFn[] = [];
@@ -310,6 +319,7 @@
       disposers.push(dispose);
     });
     void listen("session-cleanup-started", () => {
+      closingApp = true;
       cleanupProgress = null;
       dismissError();
       screen = "shuttingDown";
@@ -747,6 +757,8 @@
 
   async function checkAvailability() {
     if (!selectedPreset || preflightBusy) return;
+    if (preflightTimer) clearTimeout(preflightTimer);
+    preflightTimer = null;
     preflightRequested = true;
     preflightBusy = true;
     dismissError();
@@ -869,13 +881,18 @@
   async function stopNow() {
     stopTimer = null;
     stopBusy = true;
+    closingApp = false;
+    cleanupProgress = null;
+    dismissError();
+    screen = "shuttingDown";
     try {
       await invoke("stop_session");
       session = null;
       telemetry = null;
       screen = "idle";
     } catch (error) {
-      fail(error);
+      screen = session ? "running" : "idle";
+      fail(error, session ? "running" : "idle");
     } finally {
       stopBusy = false;
       holdingStop = false;
@@ -922,6 +939,14 @@
 
   function stopReasonLabel(reason: string) {
     return reason === "manual" ? "manual" : reason;
+  }
+
+  function gpuStockLabel(candidate: GpuCandidate) {
+    const status = candidate.stockStatus.trim().toLowerCase();
+    if (status === "high") return "High stock";
+    if (status === "medium") return "Medium stock";
+    if (status === "low") return "Low stock";
+    return "Available";
   }
 
   function messageFrom(error: unknown) {
@@ -1094,7 +1119,7 @@
                   {/each}
                 </select>
               {/if}
-              {#if errorFor("recovery")}{@render errorCard(errorFor("recovery"))}{/if}
+              {#if errorFor("setup")}{@render errorCard(errorFor("setup"))}{/if}
               <button class="primary" type="submit" disabled={setupBusy || !apiKey.trim()}>
                 {setupBusy ? "Validating key" : "Save API key"}
               </button>
@@ -1140,7 +1165,7 @@
                 <small>Check connectivity and the stored API-key profile, then retry.</small>
               </div>
             {/if}
-            {#if errorFor("setup")}{@render errorCard(errorFor("setup"))}{/if}
+            {#if errorFor("recovery")}{@render errorCard(errorFor("recovery"))}{/if}
             <div class="recovery-actions">
               <button
                 class="secondary-button"
@@ -1275,13 +1300,7 @@
               </div>
               <div class="budget-row">
                 <span class="field-label">Max GPU rate</span>
-                <button class="rate-note" type="button" onclick={checkAvailability} disabled={preflightBusy}>
-                  {preflightBusy
-                    ? "Checking live stock"
-                    : preflight
-                      ? `${preflight.usableGpuTypeIds.length} acceptable`
-                      : "Check live stock"}
-                </button>
+                <span class="rate-context">RunPod USD</span>
                 <div class="number-field money">
                   <span>$</span>
                   <input
@@ -1296,14 +1315,88 @@
                   <span>/hr</span>
                 </div>
               </div>
-              {#if preflight}
-                <div class:unavailable={preflight.usableGpuTypeIds.length === 0} class="preflight-summary">
-                  <span>{preflight.dataCenterId} volume · global Secure Cloud inventory</span>
+              <button
+                class:checked={Boolean(preflight)}
+                class:unavailable={Boolean(preflight) && eligibleGpuCandidates.length === 0}
+                class="availability-check"
+                type="button"
+                onclick={checkAvailability}
+                disabled={preflightBusy}
+              >
+                <span class="availability-icon" aria-hidden="true">
+                  {#if preflightBusy}
+                    <span class="stage-spinner"></span>
+                  {:else}
+                    <svg viewBox="0 0 16 16">
+                      <path d="M3 11.5h10M4.5 9V6.5m3.5 2.5V3.5M11.5 9V5" />
+                    </svg>
+                  {/if}
+                </span>
+                <span class="availability-copy">
                   <strong>
-                    {preflight.usableGpuTypeIds.length
-                      ? preflight.candidates.find((candidate) => candidate.eligible)?.displayName
-                      : "No GPU within limit"}
+                    {preflightBusy
+                      ? "Checking live GPU availability"
+                      : preflight
+                        ? eligibleGpuCandidates.length === 1
+                          ? "1 GPU is available"
+                          : `${eligibleGpuCandidates.length} GPUs are available`
+                        : preflightRequested
+                          ? "Updating GPU availability"
+                          : "Check GPU availability"}
                   </strong>
+                  <small>
+                    {preflight
+                      ? "Live global Secure Cloud stock · click to refresh"
+                      : "See names, VRAM, stock, and hourly prices before launch"}
+                  </small>
+                </span>
+                <span class="availability-action">{preflight ? "Refresh" : "Check now"}</span>
+              </button>
+              {#if preflight}
+                <div class:unavailable={eligibleGpuCandidates.length === 0} class="availability-panel">
+                  <p class="availability-context">
+                    Global stock only. Final placement is limited by the {preflight.dataCenterId}
+                    model volume and is confirmed during launch.
+                  </p>
+                  {#if eligibleGpuCandidates.length}
+                    <div class="gpu-results" aria-label="Available supported GPUs">
+                      {#each eligibleGpuCandidates as candidate, index}
+                        <div class="gpu-result">
+                          <span class="gpu-rank">{index + 1}</span>
+                          <span class="gpu-copy">
+                            <strong>{candidate.displayName}</strong>
+                            <small>{candidate.memoryInGb} GB VRAM · {gpuStockLabel(candidate)}</small>
+                          </span>
+                          <strong class="gpu-rate">
+                            {candidate.hourlyRateUsd === null
+                              ? "Price unknown"
+                              : `${formatUsd(candidate.hourlyRateUsd)}/hr`}
+                          </strong>
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="no-gpu-result">
+                      <strong>No supported GPU is currently within your rate limit.</strong>
+                      <small>Raise the maximum rate or refresh when RunPod stock changes.</small>
+                    </div>
+                  {/if}
+                  {#if rejectedGpuCandidates.length}
+                    <details class="rejected-gpus">
+                      <summary>
+                        Why {rejectedGpuCandidates.length} other supported
+                        {rejectedGpuCandidates.length === 1 ? " GPU is" : " GPUs are"} unavailable
+                      </summary>
+                      <div class="rejection-list">
+                        {#each rejectedGpuCandidates as candidate}
+                          <p>
+                            <strong>{candidate.displayName}</strong>
+                            <span>{candidate.reason ?? "Not currently available"}</span>
+                          </p>
+                        {/each}
+                      </div>
+                    </details>
+                  {/if}
                 </div>
               {/if}
               {#if errorFor("idle")}{@render errorCard(errorFor("idle"))}{/if}
@@ -1330,10 +1423,14 @@
               <button
                 class="primary launch-button"
                 type="button"
-                disabled={!selectedPreset || launchBusy}
+                disabled={!selectedPreset || launchBusy || Boolean(preflight && eligibleGpuCandidates.length === 0)}
                 onclick={launch}
               >
-                <span>Launch {selectedPreset?.label ?? "model"}</span>
+                <span>
+                  {preflight && eligibleGpuCandidates.length === 0
+                    ? "No GPU available · refresh to retry"
+                    : `Launch ${selectedPreset?.label ?? "model"}`}
+                </span>
                 <svg viewBox="0 0 16 16" aria-hidden="true">
                   <path d="M3.5 8h9m-3.3-3.3L12.5 8l-3.3 3.3" />
                 </svg>
@@ -1809,11 +1906,12 @@
         {:else if screen === "shuttingDown"}
           <div class="shutdown-layout" aria-live="polite">
             <div>
-              <p class="eyebrow">Closing mintPod</p>
-              <h1>Ending paid compute</h1>
+              <p class="eyebrow">{closingApp ? "Closing mintPod" : "Ending session"}</p>
+              <h1>{closingApp ? "Ending paid compute" : "Stopping paid compute"}</h1>
               <p class="lede">
-                mintPod is terminating the GPU before it closes. Keep this machine awake and
-                online until it finishes.
+                mintPod is terminating the GPU before
+                {closingApp ? "it closes" : "returning to model selection"}. Keep this machine
+                awake and online until it finishes.
               </p>
             </div>
             <div class="shutdown-status">
